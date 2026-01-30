@@ -1,0 +1,123 @@
+# ──────────────────────────────────────────────────────────────
+# Node.js / npm / Yarn / pnpm (frontend + hardhat)
+# ──────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+.pnpm-debug.log
+package-lock.json     # ← optional: keep if you use npm lockfile
+yarn.lock             # ← optional: keep if you use yarn
+pnpm-lock.yaml
+
+# ──────────────────────────────────────────────────────────────
+# Vite / React / TypeScript frontend
+# ──────────────────────────────────────────────────────────────
+dist/
+dist-ssr/
+*.local
+.vite/
+coverage/
+playwright-report/
+test-results/
+
+# ──────────────────────────────────────────────────────────────
+# Hardhat artifacts & caches
+# ──────────────────────────────────────────────────────────────
+artifacts/
+cache/
+cache_hardhat/
+build/
+coverage/
+coverage.json
+typechain/
+typechain-types/
+.flatten/
+.solcover.js.cache
+
+# ──────────────────────────────────────────────────────────────
+# Foundry (forge) artifacts & caches
+# ──────────────────────────────────────────────────────────────
+out/
+cache/
+cache/solidity-files/
+forge-artifacts/
+broadcast/            # ← deployment receipts (very sensitive!)
+forge-cache/
+
+# ──────────────────────────────────────────────────────────────
+# Secrets & private keys — NEVER commit these!
+# ──────────────────────────────────────────────────────────────
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.example          # ← usually safe to commit, but decide per project
+*.key
+*.pem
+*.keystore
+*.secret
+private-key.txt
+.mnemonic
+foundry.toml.secrets
+*.encrypted           # ← if using encrypted secrets
+
+# ──────────────────────────────────────────────────────────────
+# IDE / Editor files
+# ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+*.swo
+.DS_Store
+Thumbs.db
+*.sublime-*
+
+# ──────────────────────────────────────────────────────────────
+# Testing / coverage / gas reports
+# ──────────────────────────────────────────────────────────────
+gas-report.txt
+gas-snapshot.txt
+.gas-snapshot
+*.t.sol.cache
+test_artifacts/
+
+# ──────────────────────────────────────────────────────────────
+# Dependencies installed via forge / foundry (git submodules)
+# ──────────────────────────────────────────────────────────────
+# (usually safe to ignore lib/ if you use --no-commit)
+lib/                  # ← comment out if you want to commit dependencies
+
+# ──────────────────────────────────────────────────────────────
+# Misc crypto / blockchain tooling
+# ──────────────────────────────────────────────────────────────
+*.log
+*.tmp
+*.bak
+*.backup
+remappings.txt        # ← optional: often regenerated
+out.txt
+*.solc
+*.bin
+*.abi
+*.runtime
+*.deployed
+
+# ──────────────────────────────────────────────────────────────
+# Optional: keep these if you want clean history
+# ──────────────────────────────────────────────────────────────
+# .openzeppelin/     # upgradeable proxy manifests — usually commit
+# deployments/       # deployment info — decide per team
+# broadcasts/        # foundry deployment receipts — almost never commit
+
+# ──────────────────────────────────────────────────────────────
+# OS / temp files
+# ──────────────────────────────────────────────────────────────
+*.bak
+*.tmp
+*.temp
+temp/
+tmp/
