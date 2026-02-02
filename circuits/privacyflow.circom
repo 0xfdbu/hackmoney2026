@@ -8,7 +8,7 @@ template PrivyFlowIntent() {
     // Private inputs (hidden from onchain)
     signal input amountIn;
     signal input minAmountOut;
-    signal input userSignal;  // Private toxicity metric (e.g., user-computed imbalance)
+    signal input userSignal; // Private toxicity metric (e.g., user-computed imbalance)
 
     // Public inputs (verifiable onchain)
     signal input poolBalance0;
@@ -24,10 +24,20 @@ template PrivyFlowIntent() {
     gtZero.in[1] <== 0;
     gtZero.out === 1;
 
-    // Rough execution quality: expectedOut >= minAmountOut (simplified price impact for zeroForOne swap)
+    // Price impact check without division in constraints:
+    // expectedOut * (poolBalance0 + amountIn) >= minAmountOut * (poolBalance0 + amountIn)
+    // → amountIn * poolBalance1 >= minAmountOut * (poolBalance0 + amountIn)
+    signal numerator;
+    signal denominator;
+    signal minOutTimesDenom;
+
+    numerator <== amountIn * poolBalance1;
+    denominator <== poolBalance0 + amountIn;
+    minOutTimesDenom <== minAmountOut * denominator;
+
     component priceImpact = GreaterEqThan(252);
-    priceImpact.in[0] <== (amountIn * poolBalance1) / (poolBalance0 + amountIn);
-    priceImpact.in[1] <== minAmountOut;
+    priceImpact.in[0] <== numerator;
+    priceImpact.in[1] <== minOutTimesDenom;
     priceImpact.out === 1;
 
     // Non-toxic check: userSignal < toxicityThreshold
@@ -36,7 +46,7 @@ template PrivyFlowIntent() {
     nonToxic.in[1] <== toxicityThreshold;
     nonToxic.out === 1;
 
-    // Combine all validations (AND logic)
+    // Combine validations (AND logic)
     component and1 = AND();
     and1.a <== gtZero.out;
     and1.b <== priceImpact.out;
@@ -44,9 +54,10 @@ template PrivyFlowIntent() {
     component and2 = AND();
     and2.a <== and1.out;
     and2.b <== nonToxic.out;
+
     valid <== and2.out;
 
-    // Poseidon hash of userSignal for onchain aggregation (irreversible, privacy-preserving)
+    // Poseidon hash of userSignal for onchain aggregation (irreversible)
     component hasher = Poseidon(1);
     hasher.inputs[0] <== userSignal;
     aggSignalHash <== hasher.out;
