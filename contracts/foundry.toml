@@ -1,14 +1,14 @@
 [profile.default]
-bytecode_hash = "none"
-evm_version = "cancun"
-ffi = true
-fs_permissions = [{access = "read-write", path = ".forge-snapshots/"}]
-libs = ["lib"]
-out = "out"
-solc_version = "0.8.30"
 src = "src"
-via_ir = false
+out = "out"
+libs = ["lib"]
+test = "test"
+cache = true
+cache_path = "cache"
+broadcast = "broadcast"
 
-[lint]
-exclude_lints = ["screaming-snake-case-immutable", "screaming-snake-case-const"]
-lint_on_build = false
+remappings = [
+  "forge-std/=lib/forge-std/src/",
+  "v4-core/=lib/v4-core/src/",
+  "v4-periphery/=lib/v4-periphery/src/",
+]
