@@ -11,7 +11,7 @@ export default function Header() {
       <div className="h-full flex items-center justify-between px-6">
         {/* Logo / Title */}
         <div className="text-2xl font-bold">
-          PrivyFlow
+          
         </div>
 
         {/* Wallet Connect Button – pops Reown modal */}
