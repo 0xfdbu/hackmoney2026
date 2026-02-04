@@ -221,47 +221,58 @@ const handleSwap = async () => {
 
   try {
     setIsGeneratingProof(true);
+    
     const swapAmount = parseUnits(fromAmount, TOKENS[fromToken].decimals);
+    
+    // Calculate minimum amount out based on slippage
+    const minOut = calculateMinAmountOut(toAmount, slippage);
+    
+    // Mock pool balances - in production, fetch these from the pool contract
+    // You need to get actual pool balances for the proof to be valid!
+    const poolBalance0 = BigInt('1000000000000000000000'); // 1000 ETH
+    const poolBalance1 = BigInt('2000000000000'); // 2,000,000 USDC (6 decimals)
+    
+    // Your toxicity score as bigint
+    const userSignal = BigInt(toxicityScore);
+    const toxicityThreshold = BigInt(100); // From your contract logic
 
-    // Generate REAL ZK proof using your wasm/zkey files
-    console.log('Generating real ZK proof...');
-    const proof = await generateRealZKProof(address, toxicityScore, swapAmount);
+    console.log('Generating ZK proof...');
+    
+    const proof = await generateRealZKProof({
+      amountIn: swapAmount,
+      minAmountOut: minOut,
+      userSignal: userSignal,
+      poolBalance0: poolBalance0,
+      poolBalance1: poolBalance1,
+      toxicityThreshold: toxicityThreshold,
+    });
+
     console.log('ZK Proof generated:', proof);
 
-    // Encode proof for contract call
     const encodedProof = encodeZKProof(proof);
-    console.log('Encoded proof:', encodedProof);
-
+    console.log('Encoded proof length:', encodedProof.length);
+    
     setIsGeneratingProof(false);
 
-    // Determine swap direction
+    // ... rest of swap logic remains the same
     const token0 = TOKENS[fromToken];
     const token1 = TOKENS[toToken];
     const zeroForOne = token0.address.toLowerCase() < token1.address.toLowerCase();
 
-    // Create pool key
     const poolKey = {
       currency0: zeroForOne ? token0.address : token1.address,
       currency1: zeroForOne ? token1.address : token0.address,
-      fee: 3000, // 0.3% fee
+      fee: 3000,
       tickSpacing: 60,
       hooks: PRIVY_FLOW_HOOK_ADDRESS,
     };
 
-    // Create swap params
     const swapParams = {
       zeroForOne,
       amountSpecified: swapAmount,
       sqrtPriceLimitX96: 0n,
     };
 
-    console.log('Executing swap with:', {
-      poolKey,
-      swapParams,
-      hookData: encodedProof,
-    });
-
-    // Execute swap through Pool Manager
     await executeSwap({
       address: POOL_MANAGER_ADDRESS,
       abi: POOL_MANAGER_ABI,
@@ -270,13 +281,18 @@ const handleSwap = async () => {
       value: fromToken === 'ETH' ? swapAmount : 0n,
     });
 
-  } catch (error) {
+  } catch (error: any) {
     console.error('Swap failed:', error);
-    alert('Swap failed: ' + (error as Error).message);
+    alert('Swap failed: ' + error.message);
     setIsGeneratingProof(false);
   }
 };
-
+function calculateMinAmountOut(expectedAmount: string, slippagePercent: string): bigint {
+  const expected = parseFloat(expectedAmount);
+  const slippage = parseFloat(slippagePercent) / 100;
+  const minOut = expected * (1 - slippage);
+  return parseUnits(minOut.toFixed(6), TOKENS[toToken].decimals);
+}
   const handleMaxAmount = () => {
     if (currentBalance) {
       const balance = formatUnits(currentBalance.value, currentBalance.decimals);
