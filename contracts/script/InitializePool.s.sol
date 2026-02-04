@@ -10,10 +10,8 @@ import {IHooks} from "v4-core/interfaces/IHooks.sol";
 contract InitializePool is Script {
     function run() external {
         address poolManager = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
-        address hook = 0x80155F48AeADFB2cf5B27577c48A61e04F66BFde;
+        address hook = 0x830C433e3493b0B84A430103D95ea94a59A7eea0; // UPDATED HOOK
         
-        // Note: ETH must be currency0 (lower address)
-        // 0x0000... < 0x1c7D..., so this is correct
         address eth = 0x0000000000000000000000000000000000000000;
         address usdc = 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238;
         
@@ -25,9 +23,6 @@ contract InitializePool is Script {
             hooks: IHooks(hook)
         });
         
-        // Use a valid uint160 value for initial price
-        // This value (79228162514264337593543950336) is 2^96, representing price = 1
-        // For ETH/USDC, this means 1 ETH = 1 USDC (not realistic, but valid for testing)
         uint160 sqrtPriceX96 = 79228162514264337593543950336;
         
         vm.startBroadcast();

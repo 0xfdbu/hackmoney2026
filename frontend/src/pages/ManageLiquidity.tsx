@@ -1,15 +1,31 @@
-import React, { useState } from 'react';
-import { Plus, Minus, Loader2, AlertCircle } from 'lucide-react';
-import { useAccount, useBalance, useWriteContract, usePublicClient } from 'wagmi';
-import { parseUnits, formatUnits } from 'viem';
-import { POOL_MANAGER_ABI, ERC20_ABI } from '../contracts/abis';
-import { POOL_MANAGER_ADDRESS, HOOK_ADDRESS, TOKENS, TICK_SPACINGS } from '../contracts/constants';
+import React, { useState, useCallback, useMemo } from 'react';
+import { Plus, Minus, Loader2, AlertCircle, Check, RefreshCw } from 'lucide-react';
+import { useAccount, useBalance, useWriteContract, usePublicClient, useReadContract } from 'wagmi';
+import { parseUnits, formatUnits, maxInt256 } from 'viem';
+import { Pool, Position } from '@uniswap/v4-sdk';
+import { CurrencyAmount, Token, Ether, Currency } from '@uniswap/sdk-core';
+import { ERC20_ABI, POOL_MANAGER_ABI } from '../contracts/abis';
+import { TOKENS, TICK_SPACINGS, POOL_MANAGER_ADDRESS, HOOK_ADDRESS } from '../contracts/constants';
+
+// !!! IMPORTANT: Add your Sepolia PositionManager address here !!!
+// You can find it in the v4-periphery broadcast folder or deploy it yourself
+const POSITION_MANAGER_ADDRESS = '0x1b1c77B618BC75296cda8fdEde3C20D03D3f6c61' as `0x${string}`;
 
 type TokenKey = keyof typeof TOKENS;
 
+// Helper to get SDK Currency
+const getSdkCurrency = (tokenKey: TokenKey, chainId: number): Currency => {
+  const token = TOKENS[tokenKey];
+  if (token.isNative) {
+    return Ether.onChain(chainId);
+  }
+  return new Token(chainId, token.address, token.decimals, token.symbol);
+};
+
 export default function ManageLiquidity() {
-  const { address, isConnected } = useAccount();
+  const { address, isConnected, chainId } = useAccount();
   const publicClient = usePublicClient();
+  
   const [tab, setTab] = useState<'add' | 'remove'>('add');
   const [t0, setT0] = useState<TokenKey>('ETH');
   const [t1, setT1] = useState<TokenKey>('USDC');
@@ -17,261 +33,440 @@ export default function ManageLiquidity() {
   const [amt0, setAmt0] = useState('');
   const [amt1, setAmt1] = useState('');
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState('');
+  const [txHash, setTxHash] = useState<string>('');
 
-  const { writeContract: modify, isPending: isModifying } = useWriteContract();
-  const { writeContract: init, isPending: isInit } = useWriteContract();
-  const { writeContract: approve, isPending: isApproving } = useWriteContract();
+  const chainIdNumber = chainId || 11155111; // Default to Sepolia
 
-  const bal0 = useBalance({ address, token: TOKENS[t0].isNative ? undefined : TOKENS[t0].address });
-  const bal1 = useBalance({ address, token: TOKENS[t1].isNative ? undefined : TOKENS[t1].address });
-
-  // Get pool key with proper ordering (currency0 < currency1)
-  const getPoolKey = () => {
-    const addr0 = TOKENS[t0].address.toLowerCase();
-    const addr1 = TOKENS[t1].address.toLowerCase();
+  // Get sorted tokens and pool key
+  const { currency0, currency1, poolKey, token0Key, token1Key } = useMemo(() => {
+    const curr0 = getSdkCurrency(t0, chainIdNumber);
+    const curr1 = getSdkCurrency(t1, chainIdNumber);
     
-    // ETH (0x0000...) should be currency0, USDC (0x1c7D...) currency1
-    if (addr0 < addr1) {
-      return {
-        currency0: TOKENS[t0].address,
-        currency1: TOKENS[t1].address,
-        fee,
-        tickSpacing: TICK_SPACINGS[fee],
-        hooks: HOOK_ADDRESS,
-      };
-    } else {
-      return {
-        currency0: TOKENS[t1].address,
-        currency1: TOKENS[t0].address,
-        fee,
-        tickSpacing: TICK_SPACINGS[fee],
-        hooks: HOOK_ADDRESS,
-      };
-    }
+    // Sort tokens (currency0 < currency1)
+    const [c0, c1, t0k, t1k] = curr0.sortsBefore(curr1) 
+      ? [curr0, curr1, t0, t1] 
+      : [curr1, curr0, t1, t0];
+      
+    const pKey = {
+      currency0: c0.isNative ? '0x0000000000000000000000000000000000000000' : c0.address as `0x${string}`,
+      currency1: c1.isNative ? '0x0000000000000000000000000000000000000000' : c1.address as `0x${string}`,
+      fee,
+      tickSpacing: BigInt(TICK_SPACINGS[fee]),
+      hooks: HOOK_ADDRESS as `0x${string}`,
+    };
+    
+    return { currency0: c0, currency1: c1, poolKey: pKey, token0Key: t0k, token1Key: t1k };
+  }, [t0, t1, fee, chainIdNumber]);
+
+  // Check if pool exists
+  const { data: slot0, refetch: refetchPool } = useReadContract({
+    address: POOL_MANAGER_ADDRESS,
+    abi: POOL_MANAGER_ABI,
+    functionName: 'getSlot0',
+    args: [poolKey],
+    query: { enabled: isConnected },
+  });
+
+  const isInitialized = !!slot0 && slot0[0] !== 0n;
+
+  // Balances (using original token keys for display)
+  const { data: bal0 } = useBalance({ 
+    address, 
+    token: TOKENS[t0].isNative ? undefined : TOKENS[t0].address as `0x${string}` 
+  });
+  const { data: bal1 } = useBalance({ 
+    address, 
+    token: TOKENS[t1].isNative ? undefined : TOKENS[t1].address as `0x${string}` 
+  });
+
+  const { writeContract, isPending } = useWriteContract();
+  const { writeContract: writeToken, isPending: isApproving } = useWriteContract();
+
+  const resetState = () => {
+    setError('');
+    setSuccess('');
+    setTxHash('');
   };
 
+  // Initialize pool (direct to PoolManager)
   const handleInit = async () => {
-    if (!isConnected) return;
+    if (!isConnected) {
+      setError('Connect wallet first');
+      return;
+    }
+    
+    resetState();
+    setLoading('init');
+
     try {
-      setError('');
-      setLoading('init');
-      
-      const key = getPoolKey();
-      
-      // Check if already initialized
-      try {
-        const slot0 = await publicClient?.readContract({
-          address: POOL_MANAGER_ADDRESS,
-          abi: POOL_MANAGER_ABI,
-          functionName: 'getSlot0',
-          args: [key],
-        });
-        if (slot0 && slot0[0] !== 0n) {
-          setError('Pool already initialized!');
-          setLoading('');
-          return;
-        }
-      } catch (e) {
-        // Pool doesn't exist, continue
-      }
-      
-      // Match Foundry script exactly: 2^96 for 1:1 price
+      // 1:1 price = sqrt(1) * 2^96 = 2^96
       const sqrtPriceX96 = 79228162514264337593543950336n;
-
-      console.log('Initializing:', key);
-
-      await init({
+      
+      await writeContract({
         address: POOL_MANAGER_ADDRESS,
         abi: POOL_MANAGER_ABI,
         functionName: 'initialize',
-        args: [key, sqrtPriceX96], // Only 2 args!
+        args: [poolKey, sqrtPriceX96],
+      }, {
+        onSuccess: (hash) => {
+          setTxHash(hash);
+          setSuccess('Pool initialized successfully!');
+          refetchPool();
+          setLoading('');
+        },
+        onError: (err: any) => {
+          const msg = err.message?.toLowerCase() || '';
+          if (msg.includes('alreadyinitialized')) {
+            setSuccess('Pool already exists!');
+            refetchPool();
+          } else {
+            setError(err.message?.slice(0, 200) || 'Initialization failed');
+          }
+          setLoading('');
+        }
       });
-      
-      setLoading('');
     } catch (e: any) {
-      console.error('Init error:', e);
-      setError(e.shortMessage || e.message || 'Failed');
+      setError(e.message?.slice(0, 200) || 'Initialization failed');
       setLoading('');
     }
   };
 
-  const handleAdd = async () => {
-    if (!isConnected || !amt0 || !amt1) return;
-    setLoading('check');
-    setError('');
+  // Check and approve token for PositionManager
+  const checkAndApprove = async (tokenKey: TokenKey, amount: bigint) => {
+    if (TOKENS[tokenKey].isNative) return true;
     
+    const allowance = await publicClient?.readContract({
+      address: TOKENS[tokenKey].address as `0x${string}`,
+      abi: ERC20_ABI,
+      functionName: 'allowance',
+      args: [address!, POSITION_MANAGER_ADDRESS],
+    });
+
+    if (!allowance || allowance < amount) {
+      setLoading(`approve-${tokenKey}`);
+      
+      return new Promise<boolean>((resolve) => {
+        writeToken({
+          address: TOKENS[tokenKey].address as `0x${string}`,
+          abi: ERC20_ABI,
+          functionName: 'approve',
+          args: [POSITION_MANAGER_ADDRESS, maxInt256], // Max approve for simplicity
+        }, {
+          onSuccess: () => {
+            setLoading('');
+            resolve(true);
+          },
+          onError: (err: any) => {
+            setError(`Approval failed: ${err.message?.slice(0, 100)}`);
+            setLoading('');
+            resolve(false);
+          }
+        });
+      });
+    }
+    return true;
+  };
+
+  // Add liquidity using SDK
+  const handleAdd = async () => {
+    if (!isConnected || !amt0 || !amt1) {
+      setError('Enter amounts');
+      return;
+    }
+    if (!isInitialized) {
+      setError('Pool not initialized');
+      return;
+    }
+
+    resetState();
+    setLoading('add');
+
     try {
-      const key = getPoolKey();
-      
-      // Check pool exists
-      let slot0;
-      try {
-        slot0 = await publicClient?.readContract({
-          address: POOL_MANAGER_ADDRESS,
-          abi: POOL_MANAGER_ABI,
-          functionName: 'getSlot0',
-          args: [key],
-        });
-      } catch (e) {
-        slot0 = null;
+      // Parse amounts
+      const amount0 = parseUnits(amt0, currency0.decimals);
+      const amount1 = parseUnits(amt1, currency1.decimals);
+
+      // Create SDK Pool instance (uses current slot0 if available)
+      const pool = new Pool(
+        currency0,
+        currency1,
+        fee,
+        TICK_SPACINGS[fee],
+        HOOK_ADDRESS,
+        slot0?.[0].toString() || '79228162514264337593543950336',
+        '0', // Liquidity - SDK will calculate
+        Number(slot0?.[1] || 0) // Current tick
+      );
+
+      // Create Position (calculates liquidity, ticks, etc.)
+      // Using a 10-tick range around current price for demo
+      const tickSpacing = TICK_SPACINGS[fee];
+      const tickLower = Math.floor((pool.tickCurrent - tickSpacing * 5) / tickSpacing) * tickSpacing;
+      const tickUpper = Math.ceil((pool.tickCurrent + tickSpacing * 5) / tickSpacing) * tickSpacing;
+
+      const position = Position.fromAmounts({
+        pool,
+        tickLower,
+        tickUpper,
+        amount0: amount0.toString(),
+        amount1: amount1.toString(),
+        useFullPrecision: true,
+      });
+
+      // Check approvals (approve PositionManager, not PoolManager)
+      if (!currency0.isNative) {
+        const approved = await checkAndApprove(token0Key, amount0);
+        if (!approved) return;
       }
-      
-      if (!slot0 || slot0[0] === 0n) {
-        setError('Pool not initialized. Click Initialize first.');
-        setLoading('');
-        return;
+      if (!currency1.isNative) {
+        const approved = await checkAndApprove(token1Key, amount1);
+        if (!approved) return;
       }
 
-      // Determine which token is currency0/currency1
-      const isT0Currency0 = key.currency0 === TOKENS[t0].address;
-      const tok0 = isT0Currency0 ? TOKENS[t0] : TOKENS[t1];
-      const tok1 = isT0Currency0 ? TOKENS[t1] : TOKENS[t0];
-      const a0 = parseUnits(amt0, tok0.decimals);
-      const a1 = parseUnits(amt1, tok1.decimals);
+      // Calculate ETH value to send
+      const ethValue = currency0.isNative ? amount0 : currency1.isNative ? amount1 : 0n;
 
-      // Approve tokens if needed
-      if (!tok0.isNative) {
-        const allow = await publicClient?.readContract({ 
-          address: tok0.address, 
-          abi: ERC20_ABI, 
-          functionName: 'allowance', 
-          args: [address!, POOL_MANAGER_ADDRESS] 
-        });
-        if (!allow || allow < a0) {
-          setLoading('approve0');
-          await approve({ 
-            address: tok0.address, 
-            abi: ERC20_ABI, 
-            functionName: 'approve', 
-            args: [POOL_MANAGER_ADDRESS, a0 * 100n] 
-          });
-          return;
-        }
-      }
-      
-      if (!tok1.isNative) {
-        const allow = await publicClient?.readContract({ 
-          address: tok1.address, 
-          abi: ERC20_ABI, 
-          functionName: 'allowance', 
-          args: [address!, POOL_MANAGER_ADDRESS] 
-        });
-        if (!allow || allow < a1) {
-          setLoading('approve1');
-          await approve({ 
-            address: tok1.address, 
-            abi: ERC20_ABI, 
-            functionName: 'approve', 
-            args: [POOL_MANAGER_ADDRESS, a1 * 100n] 
-          });
-          return;
-        }
-      }
-
-      setLoading('add');
-      
-      // Calculate liquidity (simplified)
-      const liquidity = BigInt(Math.floor(Math.sqrt(Number(a0) * Number(a1))));
-      
-      await modify({
-        address: POOL_MANAGER_ADDRESS,
-        abi: POOL_MANAGER_ABI,
+      // Call PositionManager.modifyLiquidity
+      // This handles the lock pattern internally!
+      await writeContract({
+        address: POSITION_MANAGER_ADDRESS,
+        abi: [
+          {
+            inputs: [
+              {
+                components: [
+                  { name: 'currency0', type: 'address' },
+                  { name: 'currency1', type: 'address' },
+                  { name: 'fee', type: 'uint24' },
+                  { name: 'tickSpacing', type: 'int24' },
+                  { name: 'hooks', type: 'address' }
+                ],
+                name: 'key',
+                type: 'tuple'
+              },
+              {
+                components: [
+                  { name: 'tickLower', type: 'int24' },
+                  { name: 'tickUpper', type: 'int24' },
+                  { name: 'liquidityDelta', type: 'int128' },
+                  { name: 'salt', type: 'bytes32' }
+                ],
+                name: 'params',
+                type: 'tuple'
+              },
+              { name: 'hookData', type: 'bytes' }
+            ],
+            name: 'modifyLiquidity',
+            outputs: [
+              { name: 'callerDelta', type: 'int256' },
+              { name: 'feesAccrued', type: 'int256' }
+            ],
+            stateMutability: 'payable',
+            type: 'function'
+          }
+        ],
         functionName: 'modifyLiquidity',
         args: [
-          key, 
-          { 
-            tickLower: -60, 
-            tickUpper: 60, 
-            liquidityDelta: liquidity, 
-            salt: `0x${'0'.repeat(64)}` 
-          }, 
-          '0x'
+          poolKey,
+          {
+            tickLower: position.tickLower,
+            tickUpper: position.tickUpper,
+            liquidityDelta: BigInt(position.liquidity.toString()),
+            salt: `0x${'0'.repeat(64)}` as `0x${string}`
+          },
+          '0x' // Empty hook data for add liquidity
         ],
-        value: tok0.isNative ? a0 : tok1.isNative ? a1 : 0n,
+        value: ethValue,
+      }, {
+        onSuccess: (hash) => {
+          setTxHash(hash);
+          setSuccess(`Added ${position.liquidity.toString()} liquidity units`);
+          setAmt0('');
+          setAmt1('');
+          setLoading('');
+        },
+        onError: (err: any) => {
+          console.error('Add liquidity error:', err);
+          setError(err.message?.slice(0, 200) || 'Add liquidity failed');
+          setLoading('');
+        }
       });
-      
-      setLoading('');
+
     } catch (e: any) {
-      setError(e.shortMessage || e.message || 'Failed');
+      console.error('Error:', e);
+      setError(e.message?.slice(0, 200) || 'Transaction failed');
       setLoading('');
     }
   };
 
   return (
     <div className="max-w-2xl mx-auto p-4">
-      <h1 className="text-3xl font-bold mb-6">Manage Liquidity</h1>
+      <h1 className="text-3xl font-bold mb-6">Manage Liquidity (SDK)</h1>
       
-      <button 
-        onClick={handleInit} 
-        disabled={isInit}
-        className="mb-4 w-full py-2 bg-purple-100 hover:bg-purple-200 text-purple-700 rounded-lg text-sm font-medium disabled:opacity-50"
-      >
-        {isInit ? <><Loader2 className="w-4 h-4 inline animate-spin mr-1"/> Initializing...</> : `1. Initialize Pool (${fee/10000}% fee)`}
-      </button>
+      {/* Pool Status */}
+      <div className={`mb-4 p-4 rounded-lg border-2 ${isInitialized ? 'bg-green-50 border-green-200' : 'bg-yellow-50 border-yellow-200'}`}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 font-bold">
+            {isInitialized ? (
+              <Check className="w-5 h-5 text-green-600" />
+            ) : (
+              <AlertCircle className="w-5 h-5 text-yellow-600" />
+            )}
+            <span className={isInitialized ? 'text-green-800' : 'text-yellow-800'}>
+              {isInitialized ? 'Pool Active' : 'Pool Not Initialized'}
+            </span>
+          </div>
+          <button onClick={() => refetchPool()} className="p-1 hover:bg-white rounded">
+            <RefreshCw className="w-4 h-4 text-gray-600" />
+          </button>
+        </div>
+        {isInitialized && (
+          <p className="text-sm text-gray-600 mt-1">
+            Price: {(Number(slot0?.[0]) / 2**96).toFixed(6)} | 
+            Tick: {slot0?.[1].toString()}
+          </p>
+        )}
+      </div>
 
+      {/* Alerts */}
       {error && (
-        <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm flex items-center gap-2">
-          <AlertCircle className="w-4 h-4 flex-shrink-0" />
-          <span className="flex-1">{error}</span>
+        <div className="mb-4 p-3 rounded-lg text-sm bg-red-50 text-red-700 border border-red-200">
+          {error}
+        </div>
+      )}
+      {success && (
+        <div className="mb-4 p-3 rounded-lg text-sm bg-green-100 text-green-700 border border-green-200">
+          {success}
+          {txHash && (
+            <div className="mt-1 text-xs break-all">
+              Tx: {txHash.slice(0, 20)}...{txHash.slice(-8)}
+            </div>
+          )}
         </div>
       )}
 
+      {/* Initialize Button */}
+      {!isInitialized && (
+        <button 
+          onClick={handleInit} 
+          disabled={isPending || loading === 'init'}
+          className="mb-6 w-full py-3 rounded-lg font-medium bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50"
+        >
+          {loading === 'init' ? (
+            <><Loader2 className="w-4 h-4 inline animate-spin mr-2"/> Initializing...</>
+          ) : (
+            '1. Initialize Pool'
+          )}
+        </button>
+      )}
+
+      {/* Tabs */}
       <div className="flex gap-2 mb-6">
-        <button onClick={() => setTab('add')} className={`flex-1 py-2 rounded-lg font-medium ${tab==='add'?'bg-blue-600 text-white':'bg-gray-100'}`}><Plus className="w-4 h-4 inline mr-1"/> Add</button>
-        <button onClick={() => setTab('remove')} className={`flex-1 py-2 rounded-lg font-medium ${tab==='remove'?'bg-red-600 text-white':'bg-gray-100'}`}><Minus className="w-4 h-4 inline mr-1"/> Remove</button>
+        <button 
+          onClick={() => setTab('add')} 
+          className={`flex-1 py-2 rounded-lg font-medium ${tab==='add'?'bg-blue-600 text-white':'bg-gray-100'}`}
+        >
+          <Plus className="w-4 h-4 inline mr-1"/> Add
+        </button>
+        <button 
+          onClick={() => setTab('remove')} 
+          className={`flex-1 py-2 rounded-lg font-medium ${tab==='remove'?'bg-red-600 text-white':'bg-gray-100'}`}
+        >
+          <Minus className="w-4 h-4 inline mr-1"/> Remove
+        </button>
       </div>
 
-      {tab === 'add' ? (
-        <div className="space-y-4 bg-white p-6 rounded-xl shadow">
+      {tab === 'add' && (
+        <div className="space-y-4 bg-white p-6 rounded-xl shadow-lg border">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="text-sm font-medium">Token 1</label>
-              <select value={t0} onChange={(e) => setT0(e.target.value as TokenKey)} className="w-full p-2 border rounded mt-1">
+              <label className="text-sm font-medium text-gray-700 block mb-1">Token 1</label>
+              <select 
+                value={t0} 
+                onChange={(e) => { setT0(e.target.value as TokenKey); setAmt0(''); setAmt1(''); }} 
+                className="w-full p-2 border rounded-lg"
+              >
                 {Object.keys(TOKENS).map(k => <option key={k} value={k}>{k}</option>)}
               </select>
-              <p className="text-xs text-gray-500 mt-1">Bal: {bal0.data ? formatUnits(bal0.data.value, bal0.data.decimals) : '0'}</p>
+              <p className="text-xs text-gray-500 mt-1">
+                Balance: {bal0 ? parseFloat(formatUnits(bal0.value, bal0.decimals)).toFixed(4) : '0'}
+              </p>
             </div>
             <div>
-              <label className="text-sm font-medium">Token 2</label>
-              <select value={t1} onChange={(e) => setT1(e.target.value as TokenKey)} className="w-full p-2 border rounded mt-1">
+              <label className="text-sm font-medium text-gray-700 block mb-1">Token 2</label>
+              <select 
+                value={t1} 
+                onChange={(e) => { setT1(e.target.value as TokenKey); setAmt0(''); setAmt1(''); }} 
+                className="w-full p-2 border rounded-lg"
+              >
                 {Object.keys(TOKENS).map(k => <option key={k} value={k}>{k}</option>)}
               </select>
-              <p className="text-xs text-gray-500 mt-1">Bal: {bal1.data ? formatUnits(bal1.data.value, bal1.data.decimals) : '0'}</p>
+              <p className="text-xs text-gray-500 mt-1">
+                Balance: {bal1 ? parseFloat(formatUnits(bal1.value, bal1.decimals)).toFixed(4) : '0'}
+              </p>
             </div>
           </div>
 
           <div>
-            <label className="text-sm font-medium">Fee Tier</label>
-            <div className="flex gap-2 mt-1">
+            <label className="text-sm font-medium text-gray-700 block mb-1">Fee Tier</label>
+            <div className="flex gap-2">
               {[100, 500, 3000, 10000].map(f => (
-                <button key={f} onClick={() => setFee(f)} className={`flex-1 py-2 rounded border text-sm ${fee===f?'bg-blue-50 border-blue-500':'bg-white'}`}>
+                <button 
+                  key={f} 
+                  onClick={() => setFee(f)} 
+                  className={`flex-1 py-2 rounded border text-sm font-medium ${fee===f?'bg-blue-50 border-blue-500 text-blue-700':'bg-white'}`}
+                >
                   {f/10000}%
                 </button>
               ))}
             </div>
           </div>
 
-          <div className="space-y-2">
-            <input type="number" value={amt0} onChange={(e) => setAmt0(e.target.value)} placeholder={`${t0} amount`} className="w-full p-3 border rounded text-lg" />
-            <input type="number" value={amt1} onChange={(e) => setAmt1(e.target.value)} placeholder={`${t1} amount`} className="w-full p-3 border rounded text-lg" />
+          <div className="space-y-3">
+            <input 
+              type="number" 
+              step="any"
+              value={amt0} 
+              onChange={(e) => setAmt0(e.target.value)} 
+              placeholder={`Amount ${t0}`} 
+              className="w-full p-3 border rounded-lg"
+              disabled={!isInitialized}
+            />
+            <input 
+              type="number" 
+              step="any"
+              value={amt1} 
+              onChange={(e) => setAmt1(e.target.value)} 
+              placeholder={`Amount ${t1}`} 
+              className="w-full p-3 border rounded-lg"
+              disabled={!isInitialized}
+            />
           </div>
 
           <button 
             onClick={handleAdd} 
-            disabled={isModifying || isApproving || !!loading}
-            className="w-full py-3 bg-blue-600 text-white rounded-lg font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+            disabled={isPending || isApproving || !!loading || !isInitialized || !amt0 || !amt1}
+            className="w-full py-3 bg-blue-600 text-white rounded-lg font-medium disabled:opacity-50"
           >
-            {loading === 'check' ? <><Loader2 className="w-4 h-4 animate-spin"/> Checking...</> :
-             loading === 'approve0' || loading === 'approve1' ? <><Loader2 className="w-4 h-4 animate-spin"/> Approving...</> :
-             isModifying ? <><Loader2 className="w-4 h-4 animate-spin"/> Adding...</> :
-             '2. Add Liquidity'}
+            {loading.startsWith('approve') ? (
+              'Approving...'
+            ) : isPending ? (
+              <><Loader2 className="w-4 h-4 inline animate-spin mr-2"/> Adding...</>
+            ) : !isInitialized ? (
+              'Initialize Pool First'
+            ) : (
+              '2. Add Liquidity (SDK)'
+            )}
           </button>
         </div>
-      ) : (
-        <div className="text-center py-12 text-gray-500">
-          <p>Position management coming soon</p>
-          <p className="text-sm mt-2">Requires ERC6909 position tokens</p>
+      )}
+
+      {tab === 'remove' && (
+        <div className="bg-white p-6 rounded-xl shadow-lg border text-center text-gray-500">
+          Remove liquidity requires position NFT tracking.
+          <br/>Use the PositionManager to burn your position.
         </div>
       )}
     </div>
