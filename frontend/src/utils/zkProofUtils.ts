@@ -4,7 +4,7 @@ export interface ZKProof {
   a: [bigint, bigint];
   b: [[bigint, bigint], [bigint, bigint]];
   c: [bigint, bigint];
-  inputs: bigint[]; // Dynamic array for public signals
+  inputs: bigint[]; // Public signals in snarkjs order: [outputs..., publicInputs...]
 }
 
 declare global {
@@ -16,32 +16,31 @@ declare global {
 /**
  * Generate real ZK proof for PrivyFlowIntent circuit
  * 
- * Circuit inputs:
- * - Private: amountIn, minAmountOut, userSignal
- * - Public: poolBalance0, poolBalance1, toxicityThreshold
- * - Outputs: valid, aggSignalHash (also become public signals)
+ * Circuit structure:
+ * - Private inputs: amountIn, minAmountOut, userSignal
+ * - Public inputs (in circom): poolBalance0, poolBalance1, toxicityThreshold
+ * - Outputs: valid, aggSignalHash
+ * 
+ * Snarkjs publicSignals order: [valid, aggSignalHash, poolBalance0, poolBalance1, toxicityThreshold]
+ * (Outputs first, then public inputs)
  */
 export async function generateRealZKProof(params: {
-  amountIn: bigint;          // Private: actual swap amount
-  minAmountOut: bigint;      // Private: minimum amount out (slippage protected)
-  userSignal: bigint;        // Private: toxicity score/computed imbalance
-  poolBalance0: bigint;      // Public: pool balance of token0
-  poolBalance1: bigint;      // Public: pool balance of token1
-  toxicityThreshold: bigint; // Public: max allowed toxicity
+  amountIn: bigint;          // Private
+  minAmountOut: bigint;      // Private
+  userSignal: bigint;        // Private
+  poolBalance0: bigint;      // Public
+  poolBalance1: bigint;      // Public
+  toxicityThreshold: bigint; // Public
 }): Promise<ZKProof> {
   
   if (!window.snarkjs) {
     throw new Error('snarkjs not loaded. Add <script src="/snarkjs.min.js"></script> to index.html');
   }
 
-  // Circuit inputs must match your circom file exactly
   const circuitInputs = {
-    // Private inputs
     amountIn: params.amountIn.toString(),
     minAmountOut: params.minAmountOut.toString(),
     userSignal: params.userSignal.toString(),
-    
-    // Public inputs
     poolBalance0: params.poolBalance0.toString(),
     poolBalance1: params.poolBalance1.toString(),
     toxicityThreshold: params.toxicityThreshold.toString(),
@@ -50,53 +49,15 @@ export async function generateRealZKProof(params: {
   console.log('Generating ZK proof with inputs:', circuitInputs);
 
   try {
-    // Try multiple paths for different dev environments
-    const wasmPaths = [
-      '/privacyflow.wasm',
-      './privacyflow.wasm',
-      `${process.env.PUBLIC_URL}/privacyflow.wasm`,
-    ];
-    
-    const zkeyPaths = [
-      '/privacyflow_final.zkey',
-      './privacyflow_final.zkey',
-      `${process.env.PUBLIC_URL}/privacyflow_final.zkey`,
-    ];
+    const { proof, publicSignals } = await window.snarkjs.groth16.fullProve(
+      circuitInputs,
+      "/privacyflow.wasm",
+      "/privacyflow_final.zkey"
+    );
 
-    let lastError;
-    let proof, publicSignals;
+    console.log('Raw public signals from snarkjs:', publicSignals);
+    // Expected: [valid, aggSignalHash, poolBalance0, poolBalance1, toxicityThreshold]
 
-    // Try each path combination
-    for (const wasmPath of wasmPaths) {
-      for (const zkeyPath of zkeyPaths) {
-        try {
-          console.log(`Trying WASM: ${wasmPath}, ZKEY: ${zkeyPath}`);
-          const result = await window.snarkjs.groth16.fullProve(
-            circuitInputs,
-            wasmPath,
-            zkeyPath
-          );
-          proof = result.proof;
-          publicSignals = result.publicSignals;
-          console.log('Success with paths:', wasmPath, zkeyPath);
-          break;
-        } catch (e: any) {
-          lastError = e;
-          // Continue to next path
-        }
-      }
-      if (proof) break;
-    }
-
-    if (!proof) {
-      throw lastError;
-    }
-
-    console.log('Proof generated:', proof);
-    console.log('Public signals (5 total):', publicSignals);
-    // publicSignals should be: [poolBalance0, poolBalance1, toxicityThreshold, valid, aggSignalHash]
-
-    // Verify we have exactly 5 public signals
     if (publicSignals.length !== 5) {
       console.warn(`Expected 5 public signals, got ${publicSignals.length}`);
     }
@@ -121,31 +82,89 @@ export async function generateRealZKProof(params: {
 
 /**
  * Encode ZK proof for contract call
- * Your contract expects: (uint[2] a, uint[2][2] b, uint[2] c, uint[5] inputs)
- * Total: 2 + 4 + 2 + 5 = 13 uint256 values
+ * 
+ * CRITICAL: Reorder public signals to match verifier contract expectation!
+ * 
+ * Snarkjs order:    [valid, aggSignalHash, poolBalance0, poolBalance1, toxicityThreshold]
+ *                        0          1              2            3              4
+ * 
+ * Contract expects: [poolBalance0, poolBalance1, toxicityThreshold, valid, aggSignalHash]
+ *                        0            1                2             3          4
  */
 export function encodeZKProof(proof: ZKProof): `0x${string}` {
   if (proof.inputs.length < 5) {
-    throw new Error(`Expected at least 5 public signals, got ${proof.inputs.length}`);
+    throw new Error(`Expected 5 public signals, got ${proof.inputs.length}`);
   }
 
-  // Take only first 5 inputs if more are provided
-  const inputs = proof.inputs.slice(0, 5);
+  // Reorder: snarkjs [out0, out1, pub0, pub1, pub2] -> contract [pub0, pub1, pub2, out0, out1]
+  const snarkValid = proof.inputs[0];
+  const snarkAggHash = proof.inputs[1];
+  const snarkPool0 = proof.inputs[2];
+  const snarkPool1 = proof.inputs[3];
+  const snarkThreshold = proof.inputs[4];
 
+  // Contract expects: [poolBalance0, poolBalance1, toxicityThreshold, valid, aggSignalHash]
+  const contractInputs = [
+    snarkPool0,      // public input 0
+    snarkPool1,      // public input 1
+    snarkThreshold,  // public input 2
+    snarkValid,      // output 0
+    snarkAggHash     // output 1
+  ];
+
+  console.log('Reordered public signals for contract:', contractInputs.map(x => x.toString()));
+
+  // Encode as: a[2], b[4], c[2], inputs[5] = 13 uint256 values
   const encoded = encodePacked(
     [
       'uint256', 'uint256', // a[0], a[1]
       'uint256', 'uint256', 'uint256', 'uint256', // b[0][0], b[0][1], b[1][0], b[1][1]
       'uint256', 'uint256', // c[0], c[1]
-      'uint256', 'uint256', 'uint256', 'uint256', 'uint256' // inputs[0-4]
+      'uint256', 'uint256', 'uint256', 'uint256', 'uint256' // inputs[0..4]
     ],
     [
       proof.a[0], proof.a[1],
       proof.b[0][0], proof.b[0][1], proof.b[1][0], proof.b[1][1],
       proof.c[0], proof.c[1],
-      inputs[0], inputs[1], inputs[2], inputs[3], inputs[5]
+      contractInputs[0], contractInputs[1], contractInputs[2], contractInputs[3], contractInputs[4]
     ]
   );
 
   return encoded;
+}
+
+/**
+ * Alternative: If you want to verify the proof matches your inputs
+ * Call this to check proof is valid before sending to chain
+ */
+export async function verifyProofLocal(
+  proof: ZKProof,
+  verificationKey: any
+): Promise<boolean> {
+  if (!window.snarkjs) {
+    throw new Error('snarkjs not loaded');
+  }
+
+  const snarkjsProof = {
+    pi_a: [proof.a[0].toString(), proof.a[1].toString(), '1'],
+    pi_b: [
+      [proof.b[0][0].toString(), proof.b[0][1].toString()],
+      [proof.b[1][0].toString(), proof.b[1][1].toString()],
+      ['1', '0']
+    ],
+    pi_c: [proof.c[0].toString(), proof.c[1].toString(), '1'],
+    protocol: "groth16",
+    curve: "bn128"
+  };
+
+  // Use original snarkjs order for verification
+  const publicSignals = proof.inputs.map(x => x.toString());
+
+  const res = await window.snarkjs.groth16.verify(
+    verificationKey,
+    publicSignals,
+    snarkjsProof
+  );
+
+  return res;
 }

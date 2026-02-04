@@ -304,4 +304,4 @@ export const PRIVY_FLOW_HOOK_ABI = [
   }
 ] as const;
 
-export const PRIVY_FLOW_HOOK_ADDRESS = "0x2bFC164D70b7ff12E5922E078Ff1D985805fd3e2" as const;
+export const PRIVY_FLOW_HOOK_ADDRESS = "0x80155F48AeADFB2cf5B27577c48A61e04F66BFde" as const;

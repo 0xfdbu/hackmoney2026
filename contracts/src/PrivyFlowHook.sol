@@ -25,7 +25,6 @@ contract PrivyFlowHook is IHooks {
         _;
     }
 
-    // REMOVED 'override' - this is now a custom helper for your deployment script
     function getHookPermissions() public pure returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
             beforeInitialize: false,
@@ -45,9 +44,7 @@ contract PrivyFlowHook is IHooks {
         });
     }
 
-    // --- Boilerplate implementations matched to your IHooks.sol ---
-
-    // FIXED: Signatures matched to your compiler error (removed hookData)
+    // Boilerplate implementations...
     function beforeInitialize(address, PoolKey calldata, uint160) external pure override returns (bytes4) { 
         return IHooks.beforeInitialize.selector; 
     }
@@ -60,7 +57,6 @@ contract PrivyFlowHook is IHooks {
         return IHooks.beforeAddLiquidity.selector; 
     }
 
-    // FIXED: Added BalanceDelta return type
     function afterAddLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, BalanceDelta, BalanceDelta, bytes calldata) external pure override returns (bytes4, BalanceDelta) { 
         return (IHooks.afterAddLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA); 
     }
@@ -69,7 +65,6 @@ contract PrivyFlowHook is IHooks {
         return IHooks.beforeRemoveLiquidity.selector; 
     }
 
-    // FIXED: Added BalanceDelta return type
     function afterRemoveLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, BalanceDelta, BalanceDelta, bytes calldata) external pure override returns (bytes4, BalanceDelta) { 
         return (IHooks.afterRemoveLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA); 
     }
@@ -90,11 +85,21 @@ contract PrivyFlowHook is IHooks {
         SwapParams calldata, 
         bytes calldata hookData
     ) external override onlyPoolManager returns (bytes4, BeforeSwapDelta, uint24) {
-        (uint[2] memory a, uint[2][2] memory b, uint[2] memory c, uint[3] memory inputs) = 
-            abi.decode(hookData, (uint[2], uint[2][2], uint[2], uint[3]));
+        // Decode all 5 public signals
+        (uint[2] memory a, uint[2][2] memory b, uint[2] memory c, uint[5] memory rawInputs) = 
+            abi.decode(hookData, (uint[2], uint[2][2], uint[2], uint[5]));
+
+        // Reorder from snarkjs format [out0, out1, pub0, pub1, pub2] 
+        // to verifier format [pub0, pub1, pub2, out0, out1]
+        uint[5] memory inputs;
+        inputs[0] = rawInputs[2]; // poolBalance0
+        inputs[1] = rawInputs[3]; // poolBalance1
+        inputs[2] = rawInputs[4]; // toxicityThreshold
+        inputs[3] = rawInputs[0]; // valid
+        inputs[4] = rawInputs[1]; // aggSignalHash
 
         (bool success, ) = verifier.staticcall(
-            abi.encodeWithSignature("verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[3])", a, b, c, inputs)
+            abi.encodeWithSignature("verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[5])", a, b, c, inputs)
         );
         require(success, "Invalid ZK proof");
 
@@ -108,11 +113,15 @@ contract PrivyFlowHook is IHooks {
         BalanceDelta,
         bytes calldata hookData
     ) external override onlyPoolManager returns (bytes4, int128) {
-        if (hookData.length >= 224) { 
-            (, , , uint[3] memory inputs) = abi.decode(hookData, (uint[2], uint[2][2], uint[2], uint[3]));
-            uint256 signalHash = inputs[2];
+        // Check if hookData is long enough (13 * 32 bytes = 416 bytes minimum)
+        if (hookData.length >= 416) { 
+            (, , , uint[5] memory rawInputs) = abi.decode(hookData, (uint[2], uint[2][2], uint[2], uint[5]));
+            // aggSignalHash is at index 1 in raw snarkjs output, or index 4 in reordered
+            uint256 signalHash = rawInputs[1]; 
             aggregatedToxicity += signalHash;
-            if (aggregatedToxicity > 10000) return (IHooks.afterSwap.selector, int128(100)); 
+            if (aggregatedToxicity > 10000) {
+                return (IHooks.afterSwap.selector, int128(100)); 
+            }
         }
         return (IHooks.afterSwap.selector, 0);
     }

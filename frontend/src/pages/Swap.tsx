@@ -103,7 +103,7 @@ const POOL_MANAGER_ABI = [
 ] as const;
 
 // Replace with your actual Pool Manager address on Sepolia
-const POOL_MANAGER_ADDRESS = '0x000000000004444c5dc75cb358380d2e3de08a90' as `0x${string}`;
+const POOL_MANAGER_ADDRESS = '0xE03A1074c86CFeDd5C142C4F04F1a1536e203543' as `0x${string}`;
 
 export default function Swap() {
   const { address, isConnected } = useAccount();
