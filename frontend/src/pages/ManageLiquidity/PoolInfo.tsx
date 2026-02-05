@@ -13,7 +13,7 @@ interface PoolInfoProps {
   isInitialized: boolean;
   currentPrice: number;
   loading?: boolean;
-  slot0Raw?: readonly [bigint, number, number, number];
+  sqrtPriceX96?: bigint;
   poolKey?: PoolKey;
   poolError?: string;
   onInitialize: () => void;
@@ -24,7 +24,7 @@ export function PoolInfo({
   isInitialized, 
   currentPrice, 
   loading, 
-  slot0Raw, 
+  sqrtPriceX96, 
   poolKey, 
   poolError,
   onInitialize, 
@@ -52,7 +52,7 @@ export function PoolInfo({
             <p className="text-sm text-gray-600">Price: {currentPrice.toFixed(6)}</p>
           ) : (
             <p className="text-xs text-gray-500">
-              {poolError?.includes('reverted') ? 'RPC call reverted - pool may not exist' : 'Checking...'}
+              {sqrtPriceX96 === 0n ? 'Pool not initialized (sqrtPriceX96 = 0)' : 'Checking...'}
             </p>
           )}
         </div>
@@ -81,6 +81,9 @@ export function PoolInfo({
               <p>fee: {poolKey.fee}</p>
               <p>tickSpacing: {poolKey.tickSpacing.toString()}</p>
               <p className="break-all">hooks: {poolKey.hooks}</p>
+              {sqrtPriceX96 !== undefined && (
+                <p className="text-blue-500 break-all mt-2">sqrtPriceX96: {sqrtPriceX96.toString()}</p>
+              )}
               {poolError && (
                 <p className="text-red-500 break-all mt-2">Error: {poolError}</p>
               )}

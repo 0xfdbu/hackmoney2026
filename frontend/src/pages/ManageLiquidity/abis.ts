@@ -36,6 +36,13 @@ export const POOL_MANAGER_ABI = [
     type: 'function'
   },
   {
+    inputs: [{ name: 'slot', type: 'bytes32' }],
+    name: 'extsload',
+    outputs: [{ name: 'value', type: 'bytes32' }],
+    stateMutability: 'view',
+    type: 'function'
+  },
+  {
     inputs: [
       { components: [
         { name: 'currency0', type: 'address' },

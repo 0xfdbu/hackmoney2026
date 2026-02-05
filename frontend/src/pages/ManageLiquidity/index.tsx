@@ -1,7 +1,7 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useAccount, useReadContract, useWriteContract } from 'wagmi';
 import { Plus, Minus, Shield, Droplets } from 'lucide-react';
-import { parseUnits, formatUnits } from 'viem';
+import { parseUnits, formatUnits, keccak256, encodeAbiParameters, parseAbiParameters, toBytes, concat } from 'viem';
 import { PoolSelector } from './PoolSelector';
 import { PoolInfo } from './PoolInfo';
 import { DarkPoolBatches } from './DarkPoolBatches';
@@ -12,7 +12,26 @@ import {
   TOKENS,
   TICK_SPACINGS,
 } from '../../contracts/constants';
-import type { TokenKey, TabType } from './types';
+import type { TokenKey, TabType, PoolKey } from './types';
+
+// Helper: Compute poolId from poolKey (same as PoolKey.toId() in Solidity)
+function computePoolId(poolKey: PoolKey): `0x${string}` {
+  // PoolId is keccak256(abi.encode(poolKey))
+  const encoded = encodeAbiParameters(
+    parseAbiParameters('address, address, uint24, int24, address'),
+    [poolKey.currency0, poolKey.currency1, poolKey.fee, Number(poolKey.tickSpacing), poolKey.hooks]
+  );
+  return keccak256(encoded);
+}
+
+// Helper: Compute pool state storage slot (same as StateLibrary in v4)
+function getPoolStateSlot(poolId: `0x${string}`): `0x${string}` {
+  // POOLS_SLOT = 6 (storage slot index of pools mapping in PoolManager)
+  const POOLS_SLOT = 6n;
+  // slot = keccak256(abi.encodePacked(poolId, POOLS_SLOT))
+  const encoded = concat([toBytes(poolId), toBytes(POOLS_SLOT, { size: 32 })]);
+  return keccak256(encoded);
+}
 
 export default function ManageLiquidity() {
   const { address, isConnected } = useAccount();
@@ -42,26 +61,41 @@ export default function ManageLiquidity() {
     };
   }, [token0, token1, fee]);
 
-  // Fetch pool data with error handling
-  const { data: slot0, refetch: refetchPool, error: poolError, isLoading: poolLoading } = useReadContract({
+  // Compute poolId and storage slot (same as Foundry script)
+  const poolId = useMemo(() => computePoolId(poolKey), [poolKey]);
+  const poolStateSlot = useMemo(() => getPoolStateSlot(poolId), [poolId]);
+
+  // Check pool using extsload (same method as Foundry StateLibrary)
+  const { 
+    data: poolStateData, 
+    refetch: refetchPool, 
+    error: poolError, 
+    isLoading: poolLoading 
+  } = useReadContract({
     address: POOL_MANAGER_ADDRESS,
     abi: POOL_MANAGER_ABI,
-    functionName: 'getSlot0',
-    args: [poolKey],
+    functionName: 'extsload',
+    args: [poolStateSlot],
     query: { enabled: isConnected, retry: false },
   });
 
-  // Debug: log pool state
-  console.log('Pool check:', {
+  // Parse sqrtPriceX96 from storage slot data
+  // Storage layout: [sqrtPriceX96 (160 bits) | tick (24 bits) | protocolFee (24 bits) | lpFee (24 bits)]
+  const sqrtPriceX96 = poolStateData ? BigInt(poolStateData) & BigInt('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF') : 0n;
+  const isInitialized = sqrtPriceX96 !== 0n;
+  const currentPrice = isInitialized ? Math.pow(Number(sqrtPriceX96) / 2**96, 2) : 1;
+
+  // Debug: log pool state (same format as Foundry output)
+  console.log('Pool check (extsload):', {
     poolKey,
-    slot0,
-    sqrtPriceX96: slot0?.[0]?.toString(),
+    poolId,
+    poolStateSlot,
+    poolStateData,
+    sqrtPriceX96: sqrtPriceX96.toString(),
+    isInitialized,
     poolError: poolError?.message,
     isLoading: poolLoading
   });
-
-  const isInitialized = !!slot0 && slot0[0] !== undefined && slot0[0] !== 0n;
-  const currentPrice = slot0?.[0] ? Math.pow(Number(slot0[0]) / 2**96, 2) : 1;
 
   // Fetch batch data
   const { data: currentBatchId, refetch: refetchBatchId } = useReadContract({
@@ -210,7 +244,7 @@ export default function ManageLiquidity() {
           isInitialized={isInitialized}
           currentPrice={currentPrice}
           loading={loading || poolLoading}
-          slot0Raw={slot0}
+          sqrtPriceX96={sqrtPriceX96}
           poolKey={poolKey}
           poolError={poolError?.message}
           onInitialize={handleInitialize}
