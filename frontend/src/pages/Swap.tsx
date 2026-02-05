@@ -51,6 +51,16 @@ const generateProof = async (input: {
   max_price_impact: bigint;
   oracle_price: bigint;
 }) => {
+  console.log('Generating proof with inputs:', {
+    amount_in: input.amount_in.toString(),
+    min_amount_out: input.min_amount_out.toString(),
+    salt: input.salt.toString(),
+    private_key: input.private_key.toString(),
+    batch_id: input.batch_id.toString(),
+    max_price_impact: input.max_price_impact.toString(),
+    oracle_price: input.oracle_price.toString(),
+  });
+  
   // Add cache busting to force fresh download of circuit files
   const cacheBuster = `?v=${Date.now()}`;
   const wasmResponse = await fetch(`/darkpool.wasm${cacheBuster}`);
@@ -58,6 +68,8 @@ const generateProof = async (input: {
   
   const wasm = new Uint8Array(await wasmResponse.arrayBuffer());
   const zkey = new Uint8Array(await zkeyResponse.arrayBuffer());
+  
+  console.log('WASM size:', wasm.length, 'ZKEY size:', zkey.length);
 
   const { proof, publicSignals } = await snarkjs.groth16.fullProve({
     amount_in: input.amount_in.toString(),
@@ -68,6 +80,18 @@ const generateProof = async (input: {
     max_price_impact: input.max_price_impact.toString(),
     oracle_price: input.oracle_price.toString(),
   }, wasm, zkey);
+  
+  console.log('Raw public signals from snarkjs:', publicSignals);
+  
+  // Verify the proof locally
+  try {
+    const vkeyResponse = await fetch(`/verification_key.json${cacheBuster}`);
+    const vkey = await vkeyResponse.json();
+    const verified = await snarkjs.groth16.verify(vkey, publicSignals, proof);
+    console.log('Local proof verification:', verified);
+  } catch (e) {
+    console.error('Local verification failed:', e);
+  }
 
   return { proof, publicSignals };
 };
@@ -102,7 +126,17 @@ export default function DarkPoolSwap() {
   const { writeContract, isPending } = useWriteContract();
 
   const handleCommit = async () => {
-    if (!isConnected || !amount || !currentBatchId) return;
+    if (!isConnected || !amount) {
+      alert('Please connect wallet and enter amount');
+      return;
+    }
+    
+    if (!currentBatchId) {
+      alert('Waiting for batch info...');
+      return;
+    }
+    
+    console.log('Current batch ID:', currentBatchId.toString());
     
     setIsGeneratingProof(true);
     
@@ -120,12 +154,16 @@ export default function DarkPoolSwap() {
       // Mock oracle price (2000 USDC/ETH)
       const oraclePrice = 2000n * 10n**8n; // 8 decimals like Chainlink
       
+      // Ensure batch_id is a proper BigInt
+      const batchIdBigInt = BigInt(currentBatchId?.toString() || '0');
+      console.log('Using batch_id for proof:', batchIdBigInt.toString());
+      
       const { proof, publicSignals } = await generateProof({
         amount_in: amountIn,
         min_amount_out: minOut,
         salt,
         private_key: privateKey,
-        batch_id: currentBatchId,
+        batch_id: batchIdBigInt,
         max_price_impact: 500n, // 5%
         oracle_price: oraclePrice,
       });
@@ -188,19 +226,19 @@ export default function DarkPoolSwap() {
       
       console.log('Pool key:', poolKey);
       console.log('Hook data length:', hookData.length);
-      console.log('Public signals interpretation:');
-      console.log('  [0]:', publicSignals[0]);
-      console.log('  [1]:', publicSignals[1]);
-      console.log('  [2]:', publicSignals[2]);
-      console.log('  [3]:', publicSignals[3]);
-      console.log('  [4]:', publicSignals[4]);
-      console.log('  [5]:', publicSignals[5]);
+      console.log('Public signals:');
+      console.log('  [0] commitment:', publicSignals[0]);
+      console.log('  [1] nullifier:', publicSignals[1]);
+      console.log('  [2] batch_id:', publicSignals[2]);
+      console.log('  [3] valid (should be 1):', publicSignals[3]);
+      console.log('  [4] max_price_impact:', publicSignals[4]);
+      console.log('  [5] oracle_price:', publicSignals[5]);
       
-      // Check if circuit/hook mismatch exists
-      if (publicSignals[5] !== '1') {
-        console.warn('⚠️ CIRCUIT/HOOK MISMATCH: signals[5] should be 1 (valid flag)');
-        console.warn('  The hook expects signals[5] == 1, but got:', publicSignals[5]);
-        console.warn('  This means the circuit outputs are in different order than hook expects.');
+      // Check valid flag
+      if (publicSignals[3] !== '1') {
+        console.warn('⚠️ Proof validation failed: signals[3] (valid) should be 1, got:', publicSignals[3]);
+      } else {
+        console.log('✅ Proof valid flag is correct (1)');
       }
       
       // zeroForOne: true if swapping token0 for token1
@@ -222,12 +260,19 @@ export default function DarkPoolSwap() {
       
     } catch (err: any) {
       console.error('Commit failed:', err);
-      console.error('Error details:', {
-        message: err.message,
-        shortMessage: err.shortMessage,
-        revertReason: err.revertReason,
-      });
-      alert('Swap failed: ' + (err.shortMessage || err.message || 'Unknown error'));
+      console.error('Full error:', JSON.stringify(err, null, 2));
+      
+      // Try to extract more details
+      let errorMsg = 'Unknown error';
+      if (err.shortMessage) errorMsg = err.shortMessage;
+      else if (err.message) errorMsg = err.message;
+      else if (err.cause?.message) errorMsg = err.cause.message;
+      
+      if (err.revertReason) {
+        errorMsg += ` (Revert: ${err.revertReason})`;
+      }
+      
+      alert('Swap failed: ' + errorMsg);
       setIsGeneratingProof(false);
     }
   };
