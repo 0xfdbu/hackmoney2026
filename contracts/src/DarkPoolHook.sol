@@ -40,16 +40,17 @@ contract DarkPoolHook is IHooks {
         _;
     }
 
+    // Match address prefix 0x82 (bits 159 and 153)
     function getHookPermissions() public pure returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
-            beforeInitialize: true,
-            afterInitialize: false,
-            beforeAddLiquidity: false,
-            afterAddLiquidity: false,
-            beforeRemoveLiquidity: false,
-            afterRemoveLiquidity: false,
-            beforeSwap: true,
-            afterSwap: false,
+            beforeInitialize: true,      // Bit 159 = 1
+            afterInitialize: false,      // Bit 158 = 0
+            beforeAddLiquidity: false,   // Bit 157 = 0
+            afterAddLiquidity: false,    // Bit 156 = 0
+            beforeRemoveLiquidity: false,// Bit 155 = 0
+            afterRemoveLiquidity: false, // Bit 154 = 0
+            beforeSwap: true,            // Bit 153 = 1  <-- CRITICAL
+            afterSwap: false,            // Bit 152 = 0
             beforeDonate: false,
             afterDonate: false,
             beforeSwapReturnDelta: false,
@@ -59,7 +60,6 @@ contract DarkPoolHook is IHooks {
         });
     }
 
-    // Required implementations - all pure/view since they don't modify state
     function beforeInitialize(address, PoolKey calldata, uint160) external pure override returns (bytes4) { 
         return IHooks.beforeInitialize.selector; 
     }
@@ -92,7 +92,6 @@ contract DarkPoolHook is IHooks {
         return IHooks.afterDonate.selector; 
     }
 
-    // This uses onlyPoolManager so it reads state - must be view (or non-pure)
     function beforeSwap(
         address,
         PoolKey calldata,
@@ -106,7 +105,6 @@ contract DarkPoolHook is IHooks {
             uint[6] memory signals
         ) = abi.decode(hookData, (uint[2], uint[2][2], uint[2], uint[6]));
 
-        // Call verifier
         (bool success, ) = verifier.staticcall(
             abi.encodeWithSignature(
                 "verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[6])",
@@ -128,7 +126,6 @@ contract DarkPoolHook is IHooks {
         return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
     
-    // This also uses onlyPoolManager
     function afterSwap(
         address,
         PoolKey calldata,
@@ -139,7 +136,6 @@ contract DarkPoolHook is IHooks {
         return (IHooks.afterSwap.selector, 0);
     }
     
-    // Settlement function - callable by anyone
     function settleBatch(uint256 clearingPrice) external {
         Batch storage batch = batches[currentBatchId];
         require(!batch.settled, "Already settled");
