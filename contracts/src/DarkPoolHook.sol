@@ -114,11 +114,13 @@ contract DarkPoolHook is IHooks {
             )
         );
         require(success, "Invalid ZK proof");
-        require(signals[5] == 1, "Invalid constraints");
+        
+        // Circuit signal order: [commitment, nullifier, batch_id, valid, max_price_impact, oracle_price]
+        require(signals[3] == 1, "Invalid constraints");
 
-        uint256 batchId = signals[0];
-        bytes32 commitment = bytes32(signals[3]);
-        bytes32 nullifier = bytes32(signals[4]);
+        bytes32 commitment = bytes32(signals[0]);
+        bytes32 nullifier = bytes32(signals[1]);
+        uint256 batchId = signals[2];
 
         require(!nullifierSpent[nullifier], "Nullifier already spent");
         nullifierSpent[nullifier] = true;

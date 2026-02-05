@@ -51,8 +51,10 @@ const generateProof = async (input: {
   max_price_impact: bigint;
   oracle_price: bigint;
 }) => {
-  const wasmResponse = await fetch('/darkpool.wasm');
-  const zkeyResponse = await fetch('/darkpool_final.zkey');
+  // Add cache busting to force fresh download of circuit files
+  const cacheBuster = `?v=${Date.now()}`;
+  const wasmResponse = await fetch(`/darkpool.wasm${cacheBuster}`);
+  const zkeyResponse = await fetch(`/darkpool_final.zkey${cacheBuster}`);
   
   const wasm = new Uint8Array(await wasmResponse.arrayBuffer());
   const zkey = new Uint8Array(await zkeyResponse.arrayBuffer());
@@ -128,7 +130,31 @@ export default function DarkPoolSwap() {
         oracle_price: oraclePrice,
       });
 
-      // Encode hook data - snarkjs returns 3 elements but we only need first 2
+      // Encode hook data for verifier
+      // snarkjs returns: pi_a[3], pi_b[3][2], pi_c[3]
+      // We need: a[2], b[2][2], c[2]
+      // The last element of each is a marker ("1") that we drop
+      
+      console.log('Proof structure:', {
+        pi_a: proof.pi_a,
+        pi_b: proof.pi_b,
+        pi_c: proof.pi_c,
+        publicSignals
+      });
+      
+      // Format proof for verifier
+      // a = [pi_a[0], pi_a[1]]
+      // b = [[pi_b[0][0], pi_b[0][1]], [pi_b[1][0], pi_b[1][1]]] 
+      // c = [pi_c[0], pi_c[1]]
+      const a = [proof.pi_a[0], proof.pi_a[1]];
+      const b = [
+        [proof.pi_b[0][0], proof.pi_b[0][1]],
+        [proof.pi_b[1][0], proof.pi_b[1][1]]
+      ];
+      const c = [proof.pi_c[0], proof.pi_c[1]];
+      
+      console.log('Formatted proof:', { a, b, c });
+      
       const hookData = encodeAbiParameters(
         [
           { name: 'a', type: 'uint256[2]' },
@@ -137,21 +163,48 @@ export default function DarkPoolSwap() {
           { name: 'publicSignals', type: 'uint256[6]' }
         ],
         [
-          proof.pi_a.slice(0, 2), // Take only first 2 elements
-          proof.pi_b.slice(0, 2).map((x: string[]) => x.slice(0, 2)), // 2x2 matrix
-          proof.pi_c.slice(0, 2), // Take only first 2 elements
+          a as [string, string],
+          b as [string[], string[]],
+          c as [string, string],
           publicSignals.map((s: string) => BigInt(s))
         ]
       );
 
-      // Submit to DarkPool
+      // Submit to DarkPool - ensure correct token ordering
+      // Pool requires currency0 < currency1 by address
+      const ethAddr = TOKENS.ETH.address.toLowerCase();
+      const usdcAddr = TOKENS.USDC.address.toLowerCase();
+      const [currency0, currency1] = ethAddr < usdcAddr 
+        ? [TOKENS.ETH.address, TOKENS.USDC.address]
+        : [TOKENS.USDC.address, TOKENS.ETH.address];
+      
       const poolKey = {
-        currency0: TOKENS.ETH.address,
-        currency1: TOKENS.USDC.address,
+        currency0,
+        currency1,
         fee: 3000,
         tickSpacing: 60,
         hooks: HOOK_ADDRESS,
       };
+      
+      console.log('Pool key:', poolKey);
+      console.log('Hook data length:', hookData.length);
+      console.log('Public signals interpretation:');
+      console.log('  [0]:', publicSignals[0]);
+      console.log('  [1]:', publicSignals[1]);
+      console.log('  [2]:', publicSignals[2]);
+      console.log('  [3]:', publicSignals[3]);
+      console.log('  [4]:', publicSignals[4]);
+      console.log('  [5]:', publicSignals[5]);
+      
+      // Check if circuit/hook mismatch exists
+      if (publicSignals[5] !== '1') {
+        console.warn('⚠️ CIRCUIT/HOOK MISMATCH: signals[5] should be 1 (valid flag)');
+        console.warn('  The hook expects signals[5] == 1, but got:', publicSignals[5]);
+        console.warn('  This means the circuit outputs are in different order than hook expects.');
+      }
+      
+      // zeroForOne: true if swapping token0 for token1
+      const zeroForOne = fromToken === 'ETH' ? ethAddr === currency0.toLowerCase() : usdcAddr === currency0.toLowerCase();
 
       await writeContract({
         address: POOL_MANAGER_ADDRESS,
@@ -159,7 +212,7 @@ export default function DarkPoolSwap() {
         functionName: 'swap',
         args: [
           poolKey,
-          { zeroForOne: true, amountSpecified: amountIn, sqrtPriceLimitX96: 0n },
+          { zeroForOne, amountSpecified: amountIn, sqrtPriceLimitX96: 0n },
           hookData
         ],
         value: fromToken === 'ETH' ? amountIn : 0n,
@@ -167,8 +220,14 @@ export default function DarkPoolSwap() {
 
       setIsGeneratingProof(false);
       
-    } catch (err) {
+    } catch (err: any) {
       console.error('Commit failed:', err);
+      console.error('Error details:', {
+        message: err.message,
+        shortMessage: err.shortMessage,
+        revertReason: err.revertReason,
+      });
+      alert('Swap failed: ' + (err.shortMessage || err.message || 'Unknown error'));
       setIsGeneratingProof(false);
     }
   };
@@ -191,6 +250,35 @@ export default function DarkPoolSwap() {
         </p>
       </div>
 
+      {/* Token Selection */}
+      <div className="mb-4 flex gap-4">
+        <div className="flex-1">
+          <label className="block text-sm font-medium mb-1">From</label>
+          <select
+            value={fromToken}
+            onChange={(e) => setFromToken(e.target.value as keyof typeof TOKENS)}
+            className="w-full p-3 border rounded-lg"
+          >
+            <option value="ETH">ETH</option>
+            <option value="USDC">USDC</option>
+          </select>
+        </div>
+        <div className="flex items-end pb-3">
+          <ArrowDownUp className="w-5 h-5 text-gray-400" />
+        </div>
+        <div className="flex-1">
+          <label className="block text-sm font-medium mb-1">To</label>
+          <select
+            value={toToken}
+            onChange={(e) => setToToken(e.target.value as keyof typeof TOKENS)}
+            className="w-full p-3 border rounded-lg"
+          >
+            <option value="USDC">USDC</option>
+            <option value="ETH">ETH</option>
+          </select>
+        </div>
+      </div>
+
       {/* Amount Input */}
       <div className="mb-4">
         <label className="block text-sm font-medium mb-1">Amount (Hidden)</label>
@@ -202,7 +290,7 @@ export default function DarkPoolSwap() {
           className="w-full p-3 border rounded-lg"
         />
         <p className="text-xs text-gray-500 mt-1">
-          Balance: {balance ? formatUnits(balance.value, balance.decimals) : '0'}
+          Balance: {balance ? formatUnits(balance.value, TOKENS[fromToken].decimals) : '0'} {TOKENS[fromToken].symbol}
         </p>
       </div>
 

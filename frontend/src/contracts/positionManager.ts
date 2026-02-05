@@ -2,6 +2,7 @@
 
 export const POSITION_MANAGER_ADDRESS = '0x429ba70129df741B2Ca2a85BC3A2a3328e5c09b4';
 export const PERMIT2_ADDRESS = '0x000000000022D473030F116dDEE9F6B43aC78BA3';
+export const HOOK_ADDRESS = '0xca3656933c53642BcEEBfD40F0b5D5D3ABCFc3E5'; // Correct 0xCA prefix
 
 // Action constants for PositionManager
 export const ACTIONS = {
