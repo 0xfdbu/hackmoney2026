@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Plus, Loader2, AlertCircle, Check, RefreshCw, Shield } from 'lucide-react';
 import { useAccount, useBalance, useWriteContract, useReadContract } from 'wagmi';
-import { parseUnits, formatUnits } from 'viem';
+import { formatUnits } from 'viem';
 import { 
   HOOK_ADDRESS, 
   POOL_MANAGER_ADDRESS, 
@@ -160,7 +160,7 @@ export default function ManageLiquidity() {
           refetchPool();
           setLoading('');
         },
-        onError: (err: any) => {
+        onError: (err: Error) => {
           if (err.message?.includes('AlreadyInitialized')) {
             setSuccess('Pool already exists');
             refetchPool();
@@ -170,8 +170,8 @@ export default function ManageLiquidity() {
           setLoading('');
         }
       });
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
       setLoading('');
     }
   };
@@ -193,13 +193,13 @@ export default function ManageLiquidity() {
           refetchBatch();
           setLoading('');
         },
-        onError: (err: any) => {
+        onError: (err: Error) => {
           setError(err.message?.slice(0, 100));
           setLoading('');
         }
       });
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
       setLoading('');
     }
   };
