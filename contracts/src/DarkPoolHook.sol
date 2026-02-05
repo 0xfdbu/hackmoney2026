@@ -40,7 +40,9 @@ contract DarkPoolHook is IHooks {
         _;
     }
 
-    // Match address prefix 0x82 (bits 159 and 153)
+    // Hook permissions are determined by the LEAST SIGNIFICANT 14 bits of the address:
+    // beforeInitialize (bit 13 = 0x2000) | beforeSwap (bit 7 = 0x0080)
+    // Target suffix: 0x2080
     function getHookPermissions() public pure returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
             beforeInitialize: true,      // Bit 159 = 1

@@ -162,7 +162,7 @@ export default function DarkPoolSwap() {
 
       setIsGeneratingProof(false);
       
-    } catch (err: any) {
+    } catch (err) {
       console.error('Commit failed:', err);
       setIsGeneratingProof(false);
     }

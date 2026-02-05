@@ -192,7 +192,7 @@ npm run lint
 
 | Contract | Address |
 |----------|---------|
-| DarkPoolHook | `0x82dF8D3352ac04b03a5E1a090A0C19BE8f7A9162` |
+| DarkPoolHook | `0xCAC28E99c67B2f54A92f602046136899dA296080` |
 | Groth16Verifier | `0xE61bFE404E7c4Ee766E3e99f66F33236b7E02981` |
 | PoolManager | `0xE03A1074c86CFeDd5C142C4F04F1a1536e203543` |
 
