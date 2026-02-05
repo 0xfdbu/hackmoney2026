@@ -4,8 +4,32 @@ import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import { createAppKit } from '@reown/appkit/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WagmiProvider } from 'wagmi';
-import { sepolia } from '@reown/appkit/networks';
+import { defineChain } from '@reown/appkit/networks';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
+
+// Custom Sepolia with Infura RPC
+const sepolia = defineChain({
+  id: 11155111,
+  caipNetworkId: 'eip155:11155111',
+  chainNamespace: 'eip155',
+  name: 'Sepolia',
+  nativeCurrency: {
+    name: 'Sepolia Ether',
+    symbol: 'ETH',
+    decimals: 18
+  },
+  rpcUrls: {
+    default: {
+      http: ['https://sepolia.infura.io/v3/430841136bcb41bdb220248ee7297e6a'],
+    }
+  },
+  blockExplorers: {
+    default: {
+      name: 'Sepolia Etherscan',
+      url: 'https://sepolia.etherscan.io'
+    }
+  }
+});
 import './index.css';
 import Layout from './components/Layout';
 import Swap from './pages/Swap';

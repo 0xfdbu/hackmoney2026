@@ -59,7 +59,7 @@ const generateProof = async (input: {
 
   const { proof, publicSignals } = await snarkjs.groth16.fullProve({
     amount_in: input.amount_in.toString(),
-    min_amount_out: input.amount_out.toString(),
+    min_amount_out: input.min_amount_out.toString(),
     salt: input.salt.toString(),
     private_key: input.private_key.toString(),
     batch_id: input.batch_id.toString(),
@@ -128,7 +128,7 @@ export default function DarkPoolSwap() {
         oracle_price: oraclePrice,
       });
 
-      // Encode hook data
+      // Encode hook data - snarkjs returns 3 elements but we only need first 2
       const hookData = encodeAbiParameters(
         [
           { name: 'a', type: 'uint256[2]' },
@@ -136,7 +136,12 @@ export default function DarkPoolSwap() {
           { name: 'c', type: 'uint256[2]' },
           { name: 'publicSignals', type: 'uint256[6]' }
         ],
-        [proof.pi_a, proof.pi_b, proof.pi_c, publicSignals.map(s => BigInt(s))]
+        [
+          proof.pi_a.slice(0, 2), // Take only first 2 elements
+          proof.pi_b.slice(0, 2).map((x: string[]) => x.slice(0, 2)), // 2x2 matrix
+          proof.pi_c.slice(0, 2), // Take only first 2 elements
+          publicSignals.map((s: string) => BigInt(s))
+        ]
       );
 
       // Submit to DarkPool

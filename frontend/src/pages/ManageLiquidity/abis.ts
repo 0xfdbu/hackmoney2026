@@ -53,10 +53,7 @@ export const POOL_MANAGER_ABI = [
       { name: 'hookData', type: 'bytes' }
     ],
     name: 'modifyLiquidity',
-    outputs: [
-      { name: 'callerDelta', type: 'int256' },
-      { name: 'feesAccrued', type: 'int256' }
-    ],
+    outputs: [{ name: 'callerDelta', type: 'int256' }, { name: 'feesAccrued', type: 'int256' }],
     stateMutability: 'payable',
     type: 'function'
   }
