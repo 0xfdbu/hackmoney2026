@@ -104,23 +104,24 @@ contract DarkPoolHook is IHooks {
             uint[2] memory a,
             uint[2][2] memory b,
             uint[2] memory c,
-            uint[6] memory signals
-        ) = abi.decode(hookData, (uint[2], uint[2][2], uint[2], uint[6]));
+            uint[7] memory signals
+        ) = abi.decode(hookData, (uint[2], uint[2][2], uint[2], uint[7]));
 
         (bool success, ) = verifier.staticcall(
             abi.encodeWithSignature(
-                "verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[6])",
+                "verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[7])",
                 a, b, c, signals
             )
         );
         require(success, "Invalid ZK proof");
         
-        // Circuit signal order: [commitment, nullifier, batch_id, valid, max_price_impact, oracle_price]
+        // Circuit signal order from circom:
+        // [commitment, nullifier, batch_id, valid, batch_id_out, max_price_impact, oracle_price]
         require(signals[3] == 1, "Invalid constraints");
 
+        uint256 batchId = signals[2]; // batch_id (input)
         bytes32 commitment = bytes32(signals[0]);
         bytes32 nullifier = bytes32(signals[1]);
-        uint256 batchId = signals[2];
 
         require(!nullifierSpent[nullifier], "Nullifier already spent");
         nullifierSpent[nullifier] = true;

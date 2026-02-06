@@ -158,13 +158,17 @@ export default function DarkPoolSwap() {
       const batchIdBigInt = BigInt(currentBatchId?.toString() || '0');
       console.log('Using batch_id for proof:', batchIdBigInt.toString());
       
+      // Convert slippage percentage to basis points (10000 = 100%)
+      const slippageBps = BigInt(Math.round(parseFloat(slippage) * 100));
+      console.log('Slippage:', slippage, '% =', slippageBps.toString(), 'bps');
+      
       const { proof, publicSignals } = await generateProof({
         amount_in: amountIn,
         min_amount_out: minOut,
         salt,
         private_key: privateKey,
         batch_id: batchIdBigInt,
-        max_price_impact: 500n, // 5%
+        max_price_impact: slippageBps,
         oracle_price: oraclePrice,
       });
 
@@ -193,12 +197,13 @@ export default function DarkPoolSwap() {
       
       console.log('Formatted proof:', { a, b, c });
       
+      // Note: Now we have 7 public signals with the new circuit
       const hookData = encodeAbiParameters(
         [
           { name: 'a', type: 'uint256[2]' },
           { name: 'b', type: 'uint256[2][2]' },
           { name: 'c', type: 'uint256[2]' },
-          { name: 'publicSignals', type: 'uint256[6]' }
+          { name: 'publicSignals', type: 'uint256[7]' }  // Changed from 6 to 7
         ],
         [
           a as [string, string],
@@ -226,15 +231,16 @@ export default function DarkPoolSwap() {
       
       console.log('Pool key:', poolKey);
       console.log('Hook data length:', hookData.length);
-      console.log('Public signals:');
+      console.log('Public signals (actual circuit order):');
       console.log('  [0] commitment:', publicSignals[0]);
       console.log('  [1] nullifier:', publicSignals[1]);
       console.log('  [2] batch_id:', publicSignals[2]);
       console.log('  [3] valid (should be 1):', publicSignals[3]);
-      console.log('  [4] max_price_impact:', publicSignals[4]);
-      console.log('  [5] oracle_price:', publicSignals[5]);
+      console.log('  [4] batch_id_out:', publicSignals[4]);
+      console.log('  [5] max_price_impact:', publicSignals[5]);
+      console.log('  [6] oracle_price:', publicSignals[6]);
       
-      // Check valid flag
+      // Check valid flag at index 3
       if (publicSignals[3] !== '1') {
         console.warn('⚠️ Proof validation failed: signals[3] (valid) should be 1, got:', publicSignals[3]);
       } else {
@@ -342,17 +348,37 @@ export default function DarkPoolSwap() {
       {/* Slippage */}
       <div className="mb-6">
         <label className="block text-sm font-medium mb-1">Max Slippage (Hidden)</label>
-        <div className="flex gap-2">
-          {['0.5', '1.0', '2.0'].map((s) => (
+        <div className="flex gap-2 mb-2">
+          {['0.5', '1.0', '2.0', '5.0', '10.0', '50.0'].map((s) => (
             <button
               key={s}
               onClick={() => setSlippage(s)}
-              className={`px-4 py-2 rounded-lg ${slippage === s ? 'bg-purple-600 text-white' : 'bg-gray-100'}`}
+              className={`px-3 py-2 rounded-lg text-sm ${slippage === s ? 'bg-purple-600 text-white' : 'bg-gray-100'}`}
             >
               {s}%
             </button>
           ))}
         </div>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min="0"
+            max="100"
+            step="0.1"
+            value={slippage}
+            onChange={(e) => {
+              const val = parseFloat(e.target.value);
+              if (val >= 0 && val <= 100) setSlippage(e.target.value);
+            }}
+            className="w-24 p-2 border rounded-lg text-sm"
+          />
+          <span className="text-sm text-gray-600">% (Custom: 0-100%)</span>
+        </div>
+        {parseFloat(slippage) > 10 && (
+          <p className="text-xs text-orange-600 mt-1">
+            ⚠️ High slippage warning! You may receive significantly less.
+          </p>
+        )}
       </div>
 
       {/* Submit */}

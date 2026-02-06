@@ -2,7 +2,7 @@ pragma circom 2.1.6;
 
 include "circomlib/circuits/poseidon.circom";
 include "circomlib/circuits/comparators.circom";
-include "circomlib/circuits/gates.circom";  // Added for AND gate
+include "circomlib/circuits/gates.circom";
 
 template DarkPoolCommit() {
     // === PRIVATE INPUTS ===
@@ -11,15 +11,19 @@ template DarkPoolCommit() {
     signal input salt;
     signal input private_key;
     
-    // === PUBLIC INPUTS (only these go in the public list) ===
+    // === PUBLIC INPUTS ===
     signal input batch_id;
     signal input max_price_impact;
     signal input oracle_price;
     
-    // === OUTPUTS (automatically public) ===
+    // === OUTPUTS (all public) ===
     signal output commitment;
     signal output nullifier;
+    signal output batch_id_out;  // Explicitly output batch_id
     signal output valid;
+    
+    // Pass batch_id through to output
+    batch_id_out <== batch_id;
     
     // Constraint 1: Amount > 0
     component gt_zero = GreaterThan(252);
@@ -40,7 +44,7 @@ template DarkPoolCommit() {
     commit.inputs[1] <== salt;
     commitment <== commit.out;
     
-    // Constraint 4: Nullifier
+    // Constraint 4: Nullifier (includes batch_id)
     component nullif = Poseidon(2);
     nullif.inputs[0] <== private_key;
     nullif.inputs[1] <== batch_id;
@@ -53,5 +57,4 @@ template DarkPoolCommit() {
     valid <== and_gate.out;
 }
 
-// Only declare INPUTS as public, not outputs
 component main { public [batch_id, max_price_impact, oracle_price] } = DarkPoolCommit();

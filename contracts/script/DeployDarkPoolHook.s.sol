@@ -11,7 +11,7 @@ contract DeployDarkPoolHook is Script {
     
     function run() external {
         address poolManager = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
-        address verifier = 0xE61bFE404E7c4Ee766E3e99f66F33236b7E02981;
+        address verifier = 0xa70cA69922e37ab774610dD905304892AE94472A;
         
         // Uniswap v4 uses the LEAST SIGNIFICANT 14 bits for hook permissions
         // BEFORE_INITIALIZE_FLAG = 1 << 13 = 0x2000
@@ -28,28 +28,12 @@ contract DeployDarkPoolHook is Script {
         address hookAddress;
         bool found = false;
         
-        console.log("Mining for hook address ending in 0x2080 (beforeInitialize + beforeSwap)...");
-        
-        for (uint256 i = 0; i < 10000000; i++) {
-            salt = bytes32(i);
-            hookAddress = vm.computeCreate2Address(salt, initCodeHash, CREATE2_DEPLOYER);
-            
-            if (address(hookAddress).code.length > 0) continue;
-            
-            if ((uint160(hookAddress) & mask) == target) {
-                console.log("Found salt:", i);
-                console.log("Address:", hookAddress);
-                console.log("Suffix:", uint160(hookAddress) & mask);
-                found = true;
-                break;
-            }
-            
-            if (i % 100000 == 0 && i > 0) {
-                console.log("Checked:", i);
-            }
-        }
-
-        require(found, "No valid salt found");
+        // Pre-computed salt for target 0x2080
+        salt = bytes32(uint256(6928));
+        hookAddress = vm.computeCreate2Address(salt, initCodeHash, CREATE2_DEPLOYER);
+        console.log("Using pre-computed salt:", uint256(salt));
+        console.log("Expected address:", hookAddress);
+        console.log("Expected suffix:", uint160(hookAddress) & mask);
 
         vm.startBroadcast();
         DarkPoolHook hook = new DarkPoolHook{salt: salt}(IPoolManager(poolManager), verifier);
