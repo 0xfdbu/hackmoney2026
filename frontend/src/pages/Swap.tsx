@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useBalance } from 'wagmi';
 import { parseUnits, formatUnits, encodeAbiParameters, keccak256, encodePacked } from 'viem';
 import { POOL_MANAGER_ABI } from '../contracts/abis';
 import { 
@@ -9,12 +9,19 @@ import {
   BATCH_DURATION
 } from '../contracts/constants';
 import { Settings, ArrowDown, Info, X, CheckCircle, Clock, Loader2, Wallet } from 'lucide-react';
+import TokenSelector from '../components/TokenSelector';
 
-// Token icons using gradients
-const TOKEN_STYLES: Record<string, { gradient: string; icon: string }> = {
-  ETH: { gradient: 'from-blue-400 to-purple-500', icon: '◆' },
-  USDC: { gradient: 'from-green-400 to-teal-500', icon: '$' },
-  WETH: { gradient: 'from-blue-300 to-indigo-500', icon: '◆' },
+const TOKEN_INFO: Record<string, { symbol: string; name: string; icon: string }> = {
+  ETH: {
+    symbol: 'ETH',
+    name: 'Ethereum',
+    icon: 'https://cryptologos.cc/logos/ethereum-eth-logo.png',
+  },
+  USDC: {
+    symbol: 'USDC',
+    name: 'USD Coin',
+    icon: 'https://cryptologos.cc/logos/usd-coin-usdc-logo.png',
+  },
 };
 
 interface TransactionModal {
@@ -28,14 +35,13 @@ interface TransactionModal {
 export default function Swap() {
   const { address, isConnected } = useAccount();
   
-  // Swap state
   const [fromToken, setFromToken] = useState<'ETH' | 'USDC'>('ETH');
   const [toToken, setToToken] = useState<'ETH' | 'USDC'>('USDC');
   const [amount, setAmount] = useState('');
   const [slippage, setSlippage] = useState('0.5');
   const [showSettings, setShowSettings] = useState(false);
+  const [showTokenSelector, setShowTokenSelector] = useState<'from' | 'to' | null>(null);
   
-  // Commit/Reveal state
   const [commitStatus, setCommitStatus] = useState<'idle' | 'committing' | 'committed' | 'revealing' | 'done'>('idle');
   const [commitmentData, setCommitmentData] = useState<{
     commitment: `0x${string}`;
@@ -47,20 +53,30 @@ export default function Swap() {
   const [currentBlock, setCurrentBlock] = useState<number>(0);
   const [blocksRemaining, setBlocksRemaining] = useState<number>(BATCH_DURATION);
   
-  // Modal state
   const [modal, setModal] = useState<TransactionModal>({
     isOpen: false,
     type: null,
     status: 'pending',
   });
   
-  // Contract writes
   const { writeContract, data: txHash, isPending, error: writeError } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
     hash: txHash,
   });
 
-  // Update block number
+  const { data: ethBalance } = useBalance({ address });
+  const { data: usdcBalance } = useBalance({ 
+    address, 
+    token: TOKENS.USDC.address as `0x${string}` 
+  });
+
+  const getBalance = (token: string) => {
+    if (!isConnected) return '--';
+    const balance = token === 'ETH' ? ethBalance : usdcBalance;
+    if (!balance) return '--';
+    return parseFloat(formatUnits(balance.value, balance.decimals)).toFixed(4);
+  };
+
   useEffect(() => {
     const fetchBlock = async () => {
       if (window.ethereum) {
@@ -82,7 +98,6 @@ export default function Swap() {
     return () => clearInterval(interval);
   }, [revealBlock]);
 
-  // Handle transaction status changes
   useEffect(() => {
     if (isConfirming && modal.isOpen) {
       setModal(prev => ({ ...prev, status: 'pending' }));
@@ -226,6 +241,26 @@ export default function Swap() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-pink-50 via-white to-blue-50 pt-24 px-4">
+      {/* Token Selector Modal */}
+      <TokenSelector
+        isOpen={showTokenSelector === 'from'}
+        onClose={() => setShowTokenSelector(null)}
+        onSelect={(token) => {
+          setFromToken(token);
+          if (token === toToken) setToToken(fromToken);
+        }}
+        excludeToken={toToken}
+      />
+      <TokenSelector
+        isOpen={showTokenSelector === 'to'}
+        onClose={() => setShowTokenSelector(null)}
+        onSelect={(token) => {
+          setToToken(token);
+          if (token === fromToken) setFromToken(toToken);
+        }}
+        excludeToken={fromToken}
+      />
+
       {/* Transaction Modal */}
       {modal.isOpen && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -301,7 +336,6 @@ export default function Swap() {
 
       {/* Main Swap Card */}
       <div className="max-w-lg mx-auto">
-        {/* Header */}
         <div className="flex justify-between items-center mb-4 px-2">
           <h1 className="text-2xl font-bold text-gray-800">Swap</h1>
           <button 
@@ -312,7 +346,6 @@ export default function Swap() {
           </button>
         </div>
 
-        {/* Settings Panel */}
         {showSettings && (
           <div className="bg-white rounded-2xl p-5 mb-4 shadow-lg border border-gray-100">
             <div className="flex justify-between items-center mb-4">
@@ -339,34 +372,41 @@ export default function Swap() {
           </div>
         )}
 
-        {/* Swap Card */}
-        <div className="bg-white rounded-3xl p-2 shadow-xl border border-gray-100">
+        <div className="bg-white rounded-3xl p-4 shadow-xl border border-gray-100">
           {/* From Token */}
-          <div className="bg-gray-50 rounded-2xl p-5 m-2">
+          <div className="bg-gray-50 rounded-2xl p-4">
             <div className="flex justify-between mb-2">
               <span className="text-gray-500 text-sm font-medium">You pay</span>
-              <span className="text-gray-400 text-sm">Balance: --</span>
+              <span className="text-gray-500 text-sm font-medium">
+                Balance: {getBalance(fromToken)} {fromToken}
+              </span>
             </div>
             <div className="flex items-center gap-4">
               <input
-                type="number"
+                type="text"
+                inputMode="decimal"
+                pattern="[0-9]*[.]?[0-9]*"
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value === '' || /^\d*\.?\d*$/.test(value)) {
+                    setAmount(value);
+                  }
+                }}
                 placeholder="0"
-                className="flex-1 bg-transparent text-4xl text-gray-800 placeholder-gray-300 outline-none font-light"
+                className="flex-1 bg-transparent text-4xl text-gray-800 placeholder-gray-300 outline-none font-light [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                 disabled={commitStatus !== 'idle'}
               />
               <button 
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl font-semibold text-gray-700 transition-all shadow-sm ${
-                  commitStatus === 'idle' 
-                    ? 'bg-white hover:shadow-md border border-gray-200' 
-                    : 'bg-gray-100 cursor-not-allowed'
-                }`}
+                onClick={() => setShowTokenSelector('from')}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-2xl font-semibold text-gray-700 bg-white border border-gray-200 shadow-sm hover:shadow-md transition-all shrink-0"
                 disabled={commitStatus !== 'idle'}
               >
-                <div className={`w-7 h-7 rounded-full bg-gradient-to-br ${TOKEN_STYLES[fromToken].gradient} flex items-center justify-center text-white text-sm font-bold`}>
-                  {TOKEN_STYLES[fromToken].icon}
-                </div>
+                <img 
+                  src={TOKEN_INFO[fromToken].icon} 
+                  alt={fromToken}
+                  className="w-7 h-7 rounded-full"
+                />
                 <span className="text-lg">{fromToken}</span>
                 {commitStatus === 'idle' && <span className="text-gray-400 ml-1">▼</span>}
               </button>
@@ -377,21 +417,23 @@ export default function Swap() {
           </div>
 
           {/* Switch Button */}
-          <div className="flex justify-center -my-3 relative z-10">
+          <div className="flex justify-center -my-2 relative z-10 py-1">
             <button
               onClick={switchTokens}
               disabled={commitStatus !== 'idle'}
-              className="p-3 bg-white border-4 border-white shadow-lg rounded-xl hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+              className="p-3 bg-white border-2 border-gray-100 shadow-md rounded-xl hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             >
               <ArrowDown className="w-5 h-5 text-gray-600" />
             </button>
           </div>
 
           {/* To Token */}
-          <div className="bg-gray-50 rounded-2xl p-5 m-2">
+          <div className="bg-gray-50 rounded-2xl p-4">
             <div className="flex justify-between mb-2">
               <span className="text-gray-500 text-sm font-medium">You receive</span>
-              <span className="text-gray-400 text-sm">Balance: --</span>
+              <span className="text-gray-500 text-sm font-medium">
+                Balance: {getBalance(toToken)} {toToken}
+              </span>
             </div>
             <div className="flex items-center gap-4">
               <input
@@ -402,16 +444,15 @@ export default function Swap() {
                 className="flex-1 bg-transparent text-4xl text-gray-800 placeholder-gray-300 outline-none font-light"
               />
               <button 
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl font-semibold text-gray-700 transition-all shadow-sm ${
-                  commitStatus === 'idle' 
-                    ? 'bg-white hover:shadow-md border border-gray-200' 
-                    : 'bg-gray-100 cursor-not-allowed'
-                }`}
+                onClick={() => setShowTokenSelector('to')}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-2xl font-semibold text-gray-700 bg-white border border-gray-200 shadow-sm hover:shadow-md transition-all shrink-0"
                 disabled={commitStatus !== 'idle'}
               >
-                <div className={`w-7 h-7 rounded-full bg-gradient-to-br ${TOKEN_STYLES[toToken].gradient} flex items-center justify-center text-white text-sm font-bold`}>
-                  {TOKEN_STYLES[toToken].icon}
-                </div>
+                <img 
+                  src={TOKEN_INFO[toToken].icon} 
+                  alt={toToken}
+                  className="w-7 h-7 rounded-full"
+                />
                 <span className="text-lg">{toToken}</span>
                 {commitStatus === 'idle' && <span className="text-gray-400 ml-1">▼</span>}
               </button>
@@ -421,8 +462,7 @@ export default function Swap() {
             </div>
           </div>
 
-          {/* Info Row */}
-          <div className="flex justify-between items-center mt-4 mx-4 mb-2 px-2">
+          <div className="flex justify-between items-center mt-4 mx-2 mb-2 px-2">
             <div className="flex items-center gap-2 text-sm text-gray-500">
               <Info className="w-4 h-4" />
               <span>1 {fromToken} ≈ {fromToken === 'ETH' ? '2,000' : '0.0005'} {toToken}</span>
@@ -430,7 +470,6 @@ export default function Swap() {
             <span className="text-sm text-gray-400 font-medium">Slippage: {slippage}%</span>
           </div>
 
-          {/* Action Button */}
           <div className="p-2">
             <button
               onClick={buttonState.action}
@@ -448,7 +487,6 @@ export default function Swap() {
           </div>
         </div>
 
-        {/* Commitment Status Card */}
         {commitStatus !== 'idle' && commitmentData && (
           <div className="mt-5 bg-white rounded-3xl p-6 shadow-xl border border-gray-100">
             <div className="flex items-center gap-4 mb-5">
@@ -479,7 +517,6 @@ export default function Swap() {
               </div>
             </div>
 
-            {/* Progress Bar */}
             {commitStatus === 'committed' && (
               <div className="mb-5">
                 <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
@@ -491,7 +528,6 @@ export default function Swap() {
               </div>
             )}
 
-            {/* Saved Salt */}
             <div className="bg-gradient-to-r from-pink-50 to-rose-50 rounded-2xl p-4 border border-pink-100">
               <div className="text-pink-600 text-xs font-bold uppercase tracking-wider mb-2">Your Secret Salt (save this!)</div>
               <div className="flex items-center justify-between">
@@ -507,7 +543,6 @@ export default function Swap() {
               </div>
             </div>
 
-            {/* Commitment Hash */}
             <div className="mt-4 bg-gray-50 rounded-2xl p-4">
               <div className="text-gray-500 text-xs font-bold uppercase tracking-wider mb-2">Commitment</div>
               <code className="text-gray-600 font-mono text-xs break-all">
@@ -517,7 +552,6 @@ export default function Swap() {
           </div>
         )}
 
-        {/* Educational Banner */}
         <div className="mt-6 bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-pink-500/10 rounded-2xl p-6 border border-purple-100">
           <h3 className="text-gray-800 font-bold mb-4 flex items-center gap-2 text-lg">
             <span className="w-8 h-8 rounded-full bg-gradient-to-br from-pink-400 to-rose-500 flex items-center justify-center text-white text-sm">?</span>

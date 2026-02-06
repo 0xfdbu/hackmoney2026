@@ -34,6 +34,39 @@ export const POOL_MANAGER_ABI = [
         name: 'key',
         type: 'tuple',
       },
+      {
+        components: [
+          { name: 'zeroForOne', type: 'bool', internalType: 'bool' },
+          { name: 'amountSpecified', type: 'int256', internalType: 'int256' },
+          { name: 'sqrtPriceLimitX96', type: 'uint160', internalType: 'uint160' },
+        ],
+        internalType: 'struct IPoolManager.SwapParams',
+        name: 'params',
+        type: 'tuple',
+      },
+      { name: 'hookData', type: 'bytes', internalType: 'bytes' },
+    ],
+    name: 'swap',
+    outputs: [
+      { name: 'swapDelta', type: 'int256', internalType: 'BalanceDelta' },
+    ],
+    stateMutability: 'payable',
+    type: 'function',
+  },
+  {
+    inputs: [
+      {
+        components: [
+          { name: 'currency0', type: 'address', internalType: 'Currency' },
+          { name: 'currency1', type: 'address', internalType: 'Currency' },
+          { name: 'fee', type: 'uint24', internalType: 'uint24' },
+          { name: 'tickSpacing', type: 'int24', internalType: 'int24' },
+          { name: 'hooks', type: 'address', internalType: 'contract IHooks' },
+        ],
+        internalType: 'struct PoolKey',
+        name: 'key',
+        type: 'tuple',
+      },
     ],
     name: 'getSlot0',
     outputs: [
@@ -78,65 +111,6 @@ export const POOL_MANAGER_ABI = [
       { name: 'feesAccrued', type: 'int256', internalType: 'BalanceDelta' },
     ],
     stateMutability: 'payable',
-    type: 'function',
-  },
-  // Additional functions for token settlement (if needed for advanced flows)
-  {
-    inputs: [
-      { name: 'token', type: 'address', internalType: 'Currency' },
-      { name: 'amount', type: 'uint256', internalType: 'uint256' },
-    ],
-    name: 'sync',
-    outputs: [],
-    stateMutability: 'nonpayable',
-    type: 'function',
-  },
-  {
-    inputs: [
-      { name: 'recipient', type: 'address', internalType: 'address' },
-      { name: 'currency', type: 'address', internalType: 'Currency' },
-      { name: 'amount', type: 'uint256', internalType: 'uint256' },
-    ],
-    name: 'take',
-    outputs: [],
-    stateMutability: 'nonpayable',
-    type: 'function',
-  },
-] as const;
-
-export const ERC20_ABI = [
-  {
-    inputs: [{ name: 'account', type: 'address' }],
-    name: 'balanceOf',
-    outputs: [{ name: '', type: 'uint256' }],
-    stateMutability: 'view',
-    type: 'function',
-  },
-  {
-    inputs: [
-      { name: 'spender', type: 'address' },
-      { name: 'amount', type: 'uint256' },
-    ],
-    name: 'approve',
-    outputs: [{ name: '', type: 'bool' }],
-    stateMutability: 'nonpayable',
-    type: 'function',
-  },
-  {
-    inputs: [
-      { name: 'owner', type: 'address' },
-      { name: 'spender', type: 'address' },
-    ],
-    name: 'allowance',
-    outputs: [{ name: '', type: 'uint256' }],
-    stateMutability: 'view',
-    type: 'function',
-  },
-  {
-    inputs: [],
-    name: 'decimals',
-    outputs: [{ name: '', type: 'uint8' }],
-    stateMutability: 'view',
     type: 'function',
   },
 ] as const;
