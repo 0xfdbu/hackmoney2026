@@ -3,15 +3,22 @@ import { X } from 'lucide-react';
 interface TokenSelectorProps {
   isOpen: boolean;
   onClose: () => void;
-  onSelect: (token: 'ETH' | 'USDC') => void;
+  onSelect: (token: 'ETH' | 'USDC' | 'WETH') => void;
   excludeToken?: string;
 }
 
-const TOKEN_INFO: Record<string, { symbol: string; name: string; icon: string }> = {
+// Available tokens - ETH is actually WETH under the hood for the pool
+const TOKEN_INFO: Record<string, { symbol: string; name: string; icon: string; displayAs?: string }> = {
   ETH: {
     symbol: 'ETH',
     name: 'Ethereum',
     icon: 'https://cryptologos.cc/logos/ethereum-eth-logo.png',
+  },
+  WETH: {
+    symbol: 'ETH',  // Display as ETH
+    name: 'Ethereum (Wrapped)',
+    icon: 'https://cryptologos.cc/logos/ethereum-eth-logo.png',
+    displayAs: 'ETH',
   },
   USDC: {
     symbol: 'USDC',
@@ -23,7 +30,15 @@ const TOKEN_INFO: Record<string, { symbol: string; name: string; icon: string }>
 export default function TokenSelector({ isOpen, onClose, onSelect, excludeToken }: TokenSelectorProps) {
   if (!isOpen) return null;
 
-  const tokens = Object.entries(TOKEN_INFO).filter(([key]) => key !== excludeToken);
+  // Filter out excluded token and don't show ETH and WETH at the same time
+  // If ETH is selected, don't show WETH and vice versa
+  const tokens = Object.entries(TOKEN_INFO).filter(([key]) => {
+    if (key === excludeToken) return false;
+    // If ETH is excluded, also exclude WETH
+    if (excludeToken === 'ETH' && key === 'WETH') return false;
+    if (excludeToken === 'WETH' && key === 'ETH') return false;
+    return true;
+  });
 
   return (
     <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -43,7 +58,7 @@ export default function TokenSelector({ isOpen, onClose, onSelect, excludeToken 
             <button
               key={key}
               onClick={() => {
-                onSelect(key as 'ETH' | 'USDC');
+                onSelect(key as 'ETH' | 'USDC' | 'WETH');
                 onClose();
               }}
               className="w-full flex items-center gap-4 p-4 hover:bg-gray-50 rounded-2xl transition-colors"
@@ -57,7 +72,7 @@ export default function TokenSelector({ isOpen, onClose, onSelect, excludeToken 
                 }}
               />
               <div className="text-left flex-1">
-                <div className="font-bold text-gray-800">{token.symbol}</div>
+                <div className="font-bold text-gray-800">{token.displayAs || token.symbol}</div>
                 <div className="text-sm text-gray-500">{token.name}</div>
               </div>
             </button>

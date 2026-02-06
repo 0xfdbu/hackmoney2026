@@ -1,21 +1,29 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useBalance } from 'wagmi';
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useBalance, useReadContract } from 'wagmi';
 import { parseUnits, formatUnits, encodeAbiParameters, keccak256, encodePacked } from 'viem';
-import { POOL_MANAGER_ABI } from '../contracts/abis';
+import { ROUTER_ABI } from '../contracts/routerABI';
+import { COMMIT_STORE_ABI } from '../contracts/commitStoreABI';
 import { 
   HOOK_ADDRESS, 
-  POOL_MANAGER_ADDRESS,
+  COMMIT_STORE_ADDRESS,
   TOKENS,
-  BATCH_DURATION
+  BATCH_DURATION,
+  ROUTER_ADDRESS
 } from '../contracts/constants';
-import { Settings, ArrowDown, Info, X, CheckCircle, Clock, Loader2, Wallet } from 'lucide-react';
+import { Settings, ArrowDown, Info, X, CheckCircle, Clock, Loader2 } from 'lucide-react';
 import TokenSelector from '../components/TokenSelector';
 
-const TOKEN_INFO: Record<string, { symbol: string; name: string; icon: string }> = {
+const TOKEN_INFO: Record<string, { symbol: string; name: string; icon: string; isWeth?: boolean }> = {
   ETH: {
     symbol: 'ETH',
     name: 'Ethereum',
     icon: 'https://cryptologos.cc/logos/ethereum-eth-logo.png',
+  },
+  WETH: {
+    symbol: 'ETH',  // Display as ETH
+    name: 'Ethereum',
+    icon: 'https://cryptologos.cc/logos/ethereum-eth-logo.png',
+    isWeth: true,   // But it's actually WETH under the hood
   },
   USDC: {
     symbol: 'USDC',
@@ -26,29 +34,122 @@ const TOKEN_INFO: Record<string, { symbol: string; name: string; icon: string }>
 
 interface TransactionModal {
   isOpen: boolean;
-  type: 'commit' | 'reveal' | null;
+  type: 'commit' | 'reveal' | 'approve' | null;
   status: 'pending' | 'success' | 'error';
   hash?: string;
   error?: string;
 }
 
+interface CommitmentInfo {
+  commitment: `0x${string}`;
+  nullifier: `0x${string}`;
+  salt: bigint;
+  amount: bigint;
+  minOut: bigint;
+  fromToken: 'ETH' | 'USDC';
+  toToken: 'ETH' | 'USDC';
+}
+
+// Helper component to verify salt
+function SaltDisplay({ commitmentData, manualSalt, onToggleInput, showInput }: { 
+  commitmentData: CommitmentInfo; 
+  manualSalt: string; 
+  onToggleInput: () => void;
+  showInput: boolean;
+}) {
+  const verifySalt = (salt: string): { valid: boolean; color: string; message: string } => {
+    if (!salt) return { valid: false, color: 'pink', message: 'No manual salt entered' };
+    try {
+      const test = keccak256(encodePacked(['uint256', 'uint256', 'uint256'], [commitmentData.amount, commitmentData.minOut, BigInt(salt)]));
+      if (test.toLowerCase() === commitmentData.commitment.toLowerCase()) {
+        return { valid: true, color: 'green', message: '✓ Salt verified - will be used for reveal' };
+      }
+      return { valid: false, color: 'red', message: '✗ Salt does not match commitment!' };
+    } catch {
+      return { valid: false, color: 'red', message: 'Invalid salt format' };
+    }
+  };
+
+  const verification = manualSalt ? verifySalt(manualSalt) : null;
+  const displaySalt = manualSalt || commitmentData.salt.toString();
+  const bgColor = verification?.color === 'green' ? 'bg-green-50 border-green-200' : 
+                  verification?.color === 'red' ? 'bg-red-50 border-red-200' : 
+                  'bg-pink-50 border-pink-100';
+  const textColor = verification?.color === 'green' ? 'text-green-600' : 
+                    verification?.color === 'red' ? 'text-red-600' : 
+                    'text-pink-600';
+
+  return (
+    <div className={`rounded-2xl p-4 border mb-4 ${bgColor}`}>
+      <div className="flex justify-between items-center mb-2">
+        <span className={`text-xs font-bold uppercase tracking-wider ${textColor}`}>
+          {verification?.message || 'Your Secret Salt'}
+        </span>
+        <button onClick={onToggleInput} className="text-xs text-pink-500 hover:text-pink-700 underline">
+          {showInput ? 'Hide Input' : 'Fix Salt'}
+        </button>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <code className="text-gray-800 font-mono text-sm font-semibold truncate flex-1">{displaySalt}</code>
+        <button 
+          onClick={() => navigator.clipboard.writeText(displaySalt)}
+          className="px-3 py-1.5 bg-white hover:bg-gray-50 text-pink-500 rounded-lg text-xs font-semibold shadow-sm"
+        >
+          Copy
+        </button>
+      </div>
+      {!manualSalt && (
+        <p className="text-xs text-pink-600 mt-2">
+          ⚠️ Click "Fix Salt" to enter your saved salt if this one is wrong!
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ABI for ERC20 approve
+const ERC20_ABI = [
+  {
+    "constant": false,
+    "inputs": [
+      { "name": "spender", "type": "address" },
+      { "name": "amount", "type": "uint256" }
+    ],
+    "name": "approve",
+    "outputs": [{ "name": "", "type": "bool" }],
+    "type": "function"
+  },
+  {
+    "constant": true,
+    "inputs": [
+      { "name": "owner", "type": "address" },
+      { "name": "spender", "type": "address" }
+    ],
+    "name": "allowance",
+    "outputs": [{ "name": "", "type": "uint256" }],
+    "type": "function"
+  }
+] as const;
+
 export default function Swap() {
   const { address, isConnected } = useAccount();
   
-  const [fromToken, setFromToken] = useState<'ETH' | 'USDC'>('ETH');
-  const [toToken, setToToken] = useState<'ETH' | 'USDC'>('USDC');
+  const [fromToken, setFromToken] = useState<'ETH' | 'USDC' | 'WETH'>('USDC');
+  const [toToken, setToToken] = useState<'ETH' | 'USDC' | 'WETH'>('ETH');
   const [amount, setAmount] = useState('');
-  const [slippage, setSlippage] = useState('0.5');
+  const [slippage, setSlippage] = useState('100');
   const [showSettings, setShowSettings] = useState(false);
   const [showTokenSelector, setShowTokenSelector] = useState<'from' | 'to' | null>(null);
   
-  const [commitStatus, setCommitStatus] = useState<'idle' | 'committing' | 'committed' | 'revealing' | 'done'>('idle');
-  const [commitmentData, setCommitmentData] = useState<{
-    commitment: `0x${string}`;
-    nullifier: `0x${string}`;
-    salt: bigint;
-    amount: bigint;
-  } | null>(null);
+  // Helper to display token symbol (WETH shows as ETH)
+  const getDisplaySymbol = (token: string) => token === 'WETH' ? 'ETH' : token;
+  
+  // Salt recovery input
+  const [manualSalt, setManualSalt] = useState('');
+  const [showSaltInput, setShowSaltInput] = useState(false);
+  
+  const [commitStatus, setCommitStatus] = useState<'idle' | 'committing' | 'committed' | 'approving' | 'revealing' | 'done'>('idle');
+  const [commitmentData, setCommitmentData] = useState<CommitmentInfo | null>(null);
   const [revealBlock, setRevealBlock] = useState<number>(0);
   const [currentBlock, setCurrentBlock] = useState<number>(0);
   const [blocksRemaining, setBlocksRemaining] = useState<number>(BATCH_DURATION);
@@ -59,7 +160,9 @@ export default function Swap() {
     status: 'pending',
   });
   
-  const { writeContract, data: txHash, isPending, error: writeError } = useWriteContract();
+  const [needsApproval, setNeedsApproval] = useState(false);
+  
+  const { writeContract, data: txHash, isPending, error: writeError, reset } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
     hash: txHash,
   });
@@ -69,6 +172,23 @@ export default function Swap() {
     address, 
     token: TOKENS.USDC.address as `0x${string}` 
   });
+  
+  // Check allowance
+  const { data: allowance } = useReadContract({
+    address: fromToken === 'USDC' ? TOKENS.USDC.address as `0x${string}` : TOKENS.WETH.address as `0x${string}`,
+    abi: ERC20_ABI,
+    functionName: 'allowance',
+    args: address ? [address, ROUTER_ADDRESS] : undefined,
+    query: {
+      enabled: !!address && commitStatus === 'committed',
+    }
+  });
+
+  useEffect(() => {
+    if (commitStatus === 'committed' && commitmentData && allowance !== undefined) {
+      setNeedsApproval(allowance < commitmentData.amount);
+    }
+  }, [allowance, commitmentData, commitStatus]);
 
   const getBalance = (token: string) => {
     if (!isConnected) return '--';
@@ -104,10 +224,22 @@ export default function Swap() {
     }
     if (isConfirmed && modal.isOpen) {
       setModal(prev => ({ ...prev, status: 'success', hash: txHash }));
+      
       if (modal.type === 'commit') {
         setCommitStatus('committed');
+      } else if (modal.type === 'approve') {
+        setCommitStatus('committed');
+        setNeedsApproval(false);
       } else if (modal.type === 'reveal') {
         setCommitStatus('done');
+        localStorage.removeItem('privyflow_commitment');
+        setTimeout(() => {
+          setCommitStatus('idle');
+          setCommitmentData(null);
+          setRevealBlock(0);
+          setAmount('');
+          setManualSalt('');
+        }, 3000);
       }
     }
     if (writeError && modal.isOpen) {
@@ -115,9 +247,35 @@ export default function Swap() {
     }
   }, [isConfirming, isConfirmed, writeError, modal.isOpen, modal.type, txHash]);
 
+  // Load saved commitment on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('privyflow_commitment');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setCommitmentData({
+          commitment: parsed.commitment,
+          nullifier: parsed.nullifier,
+          salt: BigInt(parsed.salt),
+          amount: BigInt(parsed.amount),
+          minOut: BigInt(parsed.minOut),
+          fromToken: parsed.fromToken,
+          toToken: parsed.toToken,
+        });
+        setRevealBlock(parsed.revealBlock);
+        setCommitStatus('committed');
+        setFromToken(parsed.fromToken);
+        setToToken(parsed.toToken);
+      } catch (e) {
+        console.error('Failed to load saved commitment:', e);
+        localStorage.removeItem('privyflow_commitment');
+      }
+    }
+  }, []);
+
   const switchTokens = () => {
-    setFromToken(toToken);
-    setToToken(fromToken);
+    setFromToken(toToken === 'ETH' ? 'WETH' : toToken);
+    setToToken(fromToken === 'WETH' ? 'ETH' : fromToken);
     setAmount('');
   };
 
@@ -127,37 +285,139 @@ export default function Swap() {
     return (parseFloat(amount) * rate).toFixed(6);
   }, [amount, fromToken]);
 
+  const calculateMinOut = () => {
+    if (!amount || parseFloat(amount) <= 0) return 0n;
+    const output = parseFloat(calculateOutput());
+    const slippageVal = parseFloat(slippage);
+    const minOut = output * (1 - slippageVal / 100);
+    return parseUnits(minOut.toFixed(6), TOKENS[toToken].decimals);
+  };
+
   const handleCommit = async () => {
-    if (!amount || parseFloat(amount) <= 0 || !isConnected) return;
+    if (!amount || parseFloat(amount) <= 0 || !isConnected || !address) return;
 
     setModal({ isOpen: true, type: 'commit', status: 'pending' });
     setCommitStatus('committing');
+    reset();
 
     try {
       const amountIn = parseUnits(amount, TOKENS[fromToken].decimals);
-      const salt = BigInt(Math.floor(Math.random() * 1000000000000));
-      const privateKey = BigInt(Math.floor(Math.random() * 1000000000000));
+      const minOut = calculateMinOut();
+      const salt = BigInt(Math.floor(Math.random() * 10000000000000000000));
+      
+      console.log('Committing with:', { amount: amountIn.toString(), minOut: minOut.toString(), salt: salt.toString() });
       
       const commitment = keccak256(
-        encodePacked(['uint256', 'uint256'], [amountIn, salt])
+        encodePacked(['uint256', 'uint256', 'uint256'], [amountIn, minOut, salt])
       ) as `0x${string}`;
       
       const nullifier = keccak256(
-        encodePacked(['uint256', 'uint256'], [privateKey, 1n])
+        encodePacked(['uint256'], [salt])
       ) as `0x${string}`;
       
-      const hookData = encodeAbiParameters(
-        [{ type: 'bytes32' }, { type: 'bytes32' }],
-        [commitment, nullifier]
+      writeContract({
+        address: COMMIT_STORE_ADDRESS,
+        abi: COMMIT_STORE_ABI,
+        functionName: 'commit',
+        args: [commitment, nullifier],
+      });
+      
+      const commitmentInfo: CommitmentInfo = {
+        commitment,
+        nullifier,
+        salt,
+        amount: amountIn,
+        minOut,
+        fromToken,
+        toToken,
+      };
+      
+      setCommitmentData(commitmentInfo);
+      
+      const targetBlock = currentBlock + BATCH_DURATION;
+      setRevealBlock(targetBlock);
+      
+      // Save to localStorage
+      localStorage.setItem('privyflow_commitment', JSON.stringify({
+        commitment,
+        nullifier,
+        salt: salt.toString(),
+        amount: amountIn.toString(),
+        minOut: minOut.toString(),
+        fromToken,
+        toToken,
+        revealBlock: targetBlock,
+      }));
+      
+    } catch (error) {
+      console.error('Commit error:', error);
+      setModal(prev => ({ ...prev, status: 'error', error: (error as Error).message }));
+      setCommitStatus('idle');
+    }
+  };
+
+  const handleApprove = async () => {
+    if (!commitmentData || !isConnected) return;
+    
+    setModal({ isOpen: true, type: 'approve', status: 'pending' });
+    setCommitStatus('approving');
+    reset();
+    
+    const tokenAddress = commitmentData.fromToken === 'USDC' ? TOKENS.USDC.address : TOKENS.WETH.address;
+    
+    writeContract({
+      address: tokenAddress as `0x${string}`,
+      abi: ERC20_ABI,
+      functionName: 'approve',
+      args: [ROUTER_ADDRESS, commitmentData.amount],
+    });
+  };
+
+  const handleReveal = async () => {
+    if (!commitmentData || !isConnected || !address) return;
+    
+    // Check if we need approval first
+    if (needsApproval) {
+      await handleApprove();
+      return;
+    }
+    
+    setModal({ isOpen: true, type: 'reveal', status: 'pending' });
+    setCommitStatus('revealing');
+    reset();
+    
+    try {
+      // Use manual salt if provided
+      const saltToUse = manualSalt ? BigInt(manualSalt) : commitmentData.salt;
+      
+      console.log('Revealing with:', {
+        commitment: commitmentData.commitment,
+        salt: saltToUse.toString(),
+        minOut: commitmentData.minOut.toString(),
+        amount: commitmentData.amount.toString(),
+      });
+      
+      // Verify the commitment matches
+      const recomputedCommitment = keccak256(
+        encodePacked(['uint256', 'uint256', 'uint256'], [commitmentData.amount, commitmentData.minOut, saltToUse])
       );
       
-      const ethAddr = TOKENS.ETH.address.toLowerCase();
-      const usdcAddr = TOKENS.USDC.address.toLowerCase();
-      const [currency0, currency1] = ethAddr < usdcAddr 
-        ? [TOKENS.ETH.address, TOKENS.USDC.address]
-        : [TOKENS.USDC.address, TOKENS.ETH.address];
+      if (recomputedCommitment.toLowerCase() !== commitmentData.commitment.toLowerCase()) {
+        console.error('Commitment mismatch!');
+        console.error('Stored:', commitmentData.commitment);
+        console.error('Recomputed:', recomputedCommitment);
+        setModal(prev => ({ 
+          ...prev, 
+          status: 'error', 
+          error: 'Salt mismatch! The salt you entered does not match the commitment. Please check your saved salt.' 
+        }));
+        setCommitStatus('committed');
+        return;
+      }
       
-      const zeroForOne = fromToken === 'ETH' ? ethAddr === currency0.toLowerCase() : usdcAddr === currency0.toLowerCase();
+      const currency0 = TOKENS.USDC.address;
+      const currency1 = TOKENS.WETH.address;
+      const zeroForOne = commitmentData.fromToken === 'USDC';
       
       const poolKey = {
         currency0,
@@ -167,48 +427,33 @@ export default function Swap() {
         hooks: HOOK_ADDRESS,
       };
       
+      const hookData = encodeAbiParameters(
+        [{ type: 'bytes32' }, { type: 'uint256' }, { type: 'uint256' }],
+        [commitmentData.commitment, saltToUse, commitmentData.minOut]
+      );
+      
+      const sqrtPriceLimitX96 = 0n; // No price limit
+      
       writeContract({
-        address: POOL_MANAGER_ADDRESS,
-        abi: POOL_MANAGER_ABI,
+        address: ROUTER_ADDRESS,
+        abi: ROUTER_ABI,
         functionName: 'swap',
         args: [
           poolKey,
           { 
             zeroForOne, 
-            amountSpecified: 0n,
-            sqrtPriceLimitX96: 0n 
+            amountSpecified: commitmentData.amount,
+            sqrtPriceLimitX96
           },
           hookData
         ],
-        value: 0n,
       });
-      
-      setCommitmentData({
-        commitment,
-        nullifier,
-        salt,
-        amount: amountIn
-      });
-      
-      setRevealBlock(currentBlock + BATCH_DURATION);
       
     } catch (error) {
-      console.error('Commit error:', error);
+      console.error('Reveal error:', error);
       setModal(prev => ({ ...prev, status: 'error', error: (error as Error).message }));
-      setCommitStatus('idle');
+      setCommitStatus('committed');
     }
-  };
-
-  const handleReveal = async () => {
-    if (!commitmentData || !isConnected) return;
-    
-    setModal({ isOpen: true, type: 'reveal', status: 'pending' });
-    setCommitStatus('revealing');
-    
-    setTimeout(() => {
-      setModal(prev => ({ ...prev, status: 'success' }));
-      setCommitStatus('done');
-    }, 2000);
   };
 
   const closeModal = () => {
@@ -222,12 +467,26 @@ export default function Swap() {
     if (!amount || parseFloat(amount) <= 0) {
       return { text: 'Enter an amount', disabled: true, action: () => {} };
     }
-    if (commitStatus === 'committing' || (modal.isOpen && modal.status === 'pending')) {
+    if (commitStatus === 'committing' || commitStatus === 'approving' || commitStatus === 'revealing' || (modal.isOpen && modal.status === 'pending')) {
       return { text: 'Confirming...', disabled: true, action: () => {} };
     }
     if (commitStatus === 'committed') {
       if (blocksRemaining > 0) {
         return { text: `Wait ${blocksRemaining} blocks`, disabled: true, action: () => {} };
+      }
+      if (needsApproval) {
+        return { text: 'Approve Token', disabled: false, action: handleApprove };
+      }
+      // Check if manual salt is set but doesn't verify
+      if (manualSalt && commitmentData) {
+        try {
+          const test = keccak256(encodePacked(['uint256', 'uint256', 'uint256'], [commitmentData.amount, commitmentData.minOut, BigInt(manualSalt)]));
+          if (test.toLowerCase() !== commitmentData.commitment.toLowerCase()) {
+            return { text: 'Fix Salt to Reveal', disabled: true, action: () => {} };
+          }
+        } catch {
+          return { text: 'Invalid Salt', disabled: true, action: () => {} };
+        }
       }
       return { text: 'Reveal Swap', disabled: false, action: handleReveal };
     }
@@ -246,19 +505,25 @@ export default function Swap() {
         isOpen={showTokenSelector === 'from'}
         onClose={() => setShowTokenSelector(null)}
         onSelect={(token) => {
-          setFromToken(token);
-          if (token === toToken) setToToken(fromToken);
+          // If selecting ETH for 'from', use WETH internally
+          setFromToken(token === 'ETH' ? 'WETH' : token);
+          if (token === toToken || (token === 'ETH' && toToken === 'WETH') || (token === 'WETH' && toToken === 'ETH')) {
+            setToToken(fromToken === 'WETH' ? 'ETH' : fromToken);
+          }
         }}
-        excludeToken={toToken}
+        excludeToken={toToken === 'WETH' ? 'ETH' : toToken}
       />
       <TokenSelector
         isOpen={showTokenSelector === 'to'}
         onClose={() => setShowTokenSelector(null)}
         onSelect={(token) => {
-          setToToken(token);
-          if (token === fromToken) setFromToken(toToken);
+          // If selecting ETH for 'to', use WETH internally
+          setToToken(token === 'ETH' ? 'WETH' : token);
+          if (token === fromToken || (token === 'ETH' && fromToken === 'WETH') || (token === 'WETH' && fromToken === 'ETH')) {
+            setFromToken(toToken === 'WETH' ? 'ETH' : toToken);
+          }
         }}
-        excludeToken={fromToken}
+        excludeToken={fromToken === 'WETH' ? 'ETH' : fromToken}
       />
 
       {/* Transaction Modal */}
@@ -267,7 +532,8 @@ export default function Swap() {
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl">
             <div className="flex justify-between items-center mb-6">
               <h3 className="text-xl font-semibold text-gray-800">
-                {modal.type === 'commit' ? 'Committing Swap' : 'Revealing Swap'}
+                {modal.type === 'commit' ? 'Committing Swap' : 
+                 modal.type === 'approve' ? 'Approving Token' : 'Revealing Swap'}
               </h3>
               <button onClick={closeModal} className="text-gray-400 hover:text-gray-600 transition-colors">
                 <X className="w-6 h-6" />
@@ -291,7 +557,8 @@ export default function Swap() {
                     <CheckCircle className="w-10 h-10 text-white" />
                   </div>
                   <p className="text-gray-800 font-semibold text-lg">
-                    {modal.type === 'commit' ? 'Commitment Submitted!' : 'Swap Revealed!'}
+                    {modal.type === 'commit' ? 'Commitment Submitted!' : 
+                     modal.type === 'approve' ? 'Token Approved!' : 'Swap Revealed!'}
                   </p>
                   {modal.hash && (
                     <a 
@@ -354,34 +621,44 @@ export default function Swap() {
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="flex gap-2">
-              {['0.1', '0.5', '1.0', '2.0'].map((s) => (
+            <div className="flex gap-2 mb-3">
+              {['50', '100'].map((s) => (
                 <button
                   key={s}
                   onClick={() => setSlippage(s)}
                   className={`flex-1 py-3 rounded-xl font-semibold transition-all ${
-                    slippage === s 
+                    slippage === s
                       ? 'bg-gradient-to-r from-pink-500 to-rose-500 text-white shadow-lg shadow-pink-500/25' 
                       : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
                   }`}
                 >
-                  {s}%
+                  {s === '100' ? '100% (No Limit)' : `${s}%`}
                 </button>
               ))}
             </div>
+            <p className="text-xs text-gray-500">
+              100% slippage allows any price impact. Required for current pool state.
+            </p>
           </div>
         )}
 
+        {/* Info Banner */}
+        <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-2xl">
+          <p className="text-sm text-blue-800 font-medium">
+            💡 Swap <strong>USDC → ETH</strong> with <strong>100% slippage</strong> for best results.
+          </p>
+        </div>
+
         <div className="bg-white rounded-3xl p-4 shadow-xl border border-gray-100">
           {/* From Token */}
-          <div className="bg-gray-50 rounded-2xl p-4">
+          <div className="bg-gray-50 rounded-2xl p-4 mb-3">
             <div className="flex justify-between mb-2">
               <span className="text-gray-500 text-sm font-medium">You pay</span>
               <span className="text-gray-500 text-sm font-medium">
                 Balance: {getBalance(fromToken)} {fromToken}
               </span>
             </div>
-            <div className="flex items-center gap-4">
+            <div className="flex items-center justify-between gap-3">
               <input
                 type="text"
                 inputMode="decimal"
@@ -394,12 +671,12 @@ export default function Swap() {
                   }
                 }}
                 placeholder="0"
-                className="flex-1 bg-transparent text-4xl text-gray-800 placeholder-gray-300 outline-none font-light [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                className="flex-1 min-w-0 bg-transparent text-4xl text-gray-800 placeholder-gray-300 outline-none font-light"
                 disabled={commitStatus !== 'idle'}
               />
               <button 
                 onClick={() => setShowTokenSelector('from')}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-2xl font-semibold text-gray-700 bg-white border border-gray-200 shadow-sm hover:shadow-md transition-all shrink-0"
+                className="flex items-center gap-2 px-3 py-2 rounded-2xl font-semibold text-gray-700 bg-white border border-gray-200 shadow-sm hover:shadow-md transition-all whitespace-nowrap"
                 disabled={commitStatus !== 'idle'}
               >
                 <img 
@@ -408,7 +685,7 @@ export default function Swap() {
                   className="w-7 h-7 rounded-full"
                 />
                 <span className="text-lg">{fromToken}</span>
-                {commitStatus === 'idle' && <span className="text-gray-400 ml-1">▼</span>}
+                {commitStatus === 'idle' && <span className="text-gray-400 text-xs">▼</span>}
               </button>
             </div>
             <div className="text-gray-400 text-sm mt-2 font-medium">
@@ -417,35 +694,35 @@ export default function Swap() {
           </div>
 
           {/* Switch Button */}
-          <div className="flex justify-center -my-2 relative z-10 py-1">
+          <div className="flex justify-center -my-2 relative z-10">
             <button
               onClick={switchTokens}
               disabled={commitStatus !== 'idle'}
-              className="p-3 bg-white border-2 border-gray-100 shadow-md rounded-xl hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+              className="p-2.5 bg-white border-2 border-gray-100 shadow-md rounded-xl hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             >
               <ArrowDown className="w-5 h-5 text-gray-600" />
             </button>
           </div>
 
           {/* To Token */}
-          <div className="bg-gray-50 rounded-2xl p-4">
+          <div className="bg-gray-50 rounded-2xl p-4 mt-3">
             <div className="flex justify-between mb-2">
-              <span className="text-gray-500 text-sm font-medium">You receive</span>
+              <span className="text-gray-500 text-sm font-medium">You receive (min)</span>
               <span className="text-gray-500 text-sm font-medium">
                 Balance: {getBalance(toToken)} {toToken}
               </span>
             </div>
-            <div className="flex items-center gap-4">
+            <div className="flex items-center justify-between gap-3">
               <input
                 type="text"
                 value={calculateOutput()}
                 readOnly
                 placeholder="0"
-                className="flex-1 bg-transparent text-4xl text-gray-800 placeholder-gray-300 outline-none font-light"
+                className="flex-1 min-w-0 bg-transparent text-4xl text-gray-800 placeholder-gray-300 outline-none font-light"
               />
               <button 
                 onClick={() => setShowTokenSelector('to')}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-2xl font-semibold text-gray-700 bg-white border border-gray-200 shadow-sm hover:shadow-md transition-all shrink-0"
+                className="flex items-center gap-2 px-3 py-2 rounded-2xl font-semibold text-gray-700 bg-white border border-gray-200 shadow-sm hover:shadow-md transition-all whitespace-nowrap"
                 disabled={commitStatus !== 'idle'}
               >
                 <img 
@@ -454,29 +731,31 @@ export default function Swap() {
                   className="w-7 h-7 rounded-full"
                 />
                 <span className="text-lg">{toToken}</span>
-                {commitStatus === 'idle' && <span className="text-gray-400 ml-1">▼</span>}
+                {commitStatus === 'idle' && <span className="text-gray-400 text-xs">▼</span>}
               </button>
             </div>
             <div className="text-gray-400 text-sm mt-2 font-medium">
-              ${calculateOutput() ? (parseFloat(calculateOutput()) * (toToken === 'ETH' ? 2000 : 1)).toFixed(2) : '0.00'}
+              Min: {calculateOutput() ? (parseFloat(calculateOutput()) * (1 - parseFloat(slippage) / 100)).toFixed(6) : '0.00'} {toToken}
             </div>
           </div>
 
-          <div className="flex justify-between items-center mt-4 mx-2 mb-2 px-2">
+          <div className="flex justify-between items-center mt-4 mx-2 mb-2">
             <div className="flex items-center gap-2 text-sm text-gray-500">
               <Info className="w-4 h-4" />
-              <span>1 {fromToken} ≈ {fromToken === 'ETH' ? '2,000' : '0.0005'} {toToken}</span>
+              <span>Rate: 1 {fromToken} ≈ {fromToken === 'ETH' ? '2,000' : '0.0005'} {toToken}</span>
             </div>
-            <span className="text-sm text-gray-400 font-medium">Slippage: {slippage}%</span>
+            <span className="text-sm font-semibold text-pink-600">Slippage: {slippage}%</span>
           </div>
 
-          <div className="p-2">
+          <div className="mt-2">
             <button
               onClick={buttonState.action}
               disabled={buttonState.disabled}
               className={`w-full py-4 rounded-2xl font-bold text-lg transition-all shadow-lg ${
                 buttonState.disabled
                   ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                  : commitStatus === 'committed' && needsApproval
+                  ? 'bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white shadow-orange-500/25'
                   : commitStatus === 'committed' && blocksRemaining === 0
                   ? 'bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white shadow-green-500/25'
                   : 'bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600 text-white shadow-pink-500/25'
@@ -493,23 +772,30 @@ export default function Swap() {
               <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${
                 commitStatus === 'done' 
                   ? 'bg-gradient-to-br from-green-400 to-emerald-500' 
+                  : commitStatus === 'approving'
+                  ? 'bg-gradient-to-br from-orange-400 to-amber-500'
                   : 'bg-gradient-to-br from-pink-400 to-rose-500'
               }`}>
                 {commitStatus === 'done' 
                   ? <CheckCircle className="w-6 h-6 text-white" /> 
+                  : commitStatus === 'approving'
+                  ? <Loader2 className="w-6 h-6 text-white animate-spin" />
                   : <Clock className="w-6 h-6 text-white" />
                 }
               </div>
               <div>
                 <div className="text-gray-800 font-bold text-lg">
                   {commitStatus === 'committing' && 'Committing...'}
-                  {commitStatus === 'committed' && 'Waiting to reveal'}
+                  {commitStatus === 'committed' && (needsApproval ? 'Approval Required' : 'Waiting to reveal')}
+                  {commitStatus === 'approving' && 'Approving...'}
                   {commitStatus === 'revealing' && 'Revealing...'}
                   {commitStatus === 'done' && 'Swap complete!'}
                 </div>
                 <div className="text-gray-500 text-sm font-medium">
                   {commitStatus === 'committed' && blocksRemaining > 0 
                     ? `${blocksRemaining} blocks remaining`
+                    : commitStatus === 'committed' && needsApproval
+                    ? 'Approve token to continue'
                     : commitStatus === 'committed' 
                     ? 'Ready to reveal!'
                     : ''}
@@ -525,25 +811,81 @@ export default function Swap() {
                     style={{ width: `${Math.min(100, ((BATCH_DURATION - blocksRemaining) / BATCH_DURATION) * 100)}%` }}
                   />
                 </div>
+                <div className="flex justify-end mt-2">
+                  <button
+                    onClick={() => {
+                      if (confirm('Clear this commitment and start over? You will lose the ability to reveal this swap.')) {
+                        localStorage.removeItem('privyflow_commitment');
+                        setCommitStatus('idle');
+                        setCommitmentData(null);
+                        setRevealBlock(0);
+                        setManualSalt('');
+                        setAmount('');
+                      }
+                    }}
+                    className="text-xs text-gray-400 hover:text-red-500 underline"
+                  >
+                    Reset / Start Over
+                  </button>
+                </div>
               </div>
             )}
 
-            <div className="bg-gradient-to-r from-pink-50 to-rose-50 rounded-2xl p-4 border border-pink-100">
-              <div className="text-pink-600 text-xs font-bold uppercase tracking-wider mb-2">Your Secret Salt (save this!)</div>
-              <div className="flex items-center justify-between">
-                <code className="text-gray-800 font-mono text-lg font-semibold">
-                  {commitmentData.salt.toString()}
-                </code>
-                <button 
-                  onClick={() => navigator.clipboard.writeText(commitmentData.salt.toString())}
-                  className="px-4 py-2 bg-white hover:bg-gray-50 text-pink-500 rounded-xl text-sm font-semibold shadow-sm transition-colors"
-                >
-                  Copy
-                </button>
-              </div>
-            </div>
+            {/* Salt Display */}
+            <SaltDisplay 
+              commitmentData={commitmentData} 
+              manualSalt={manualSalt} 
+              onToggleInput={() => setShowSaltInput(!showSaltInput)} 
+              showInput={showSaltInput}
+            />
 
-            <div className="mt-4 bg-gray-50 rounded-2xl p-4">
+            {/* Manual Salt Input */}
+            {showSaltInput && (
+              <div className="bg-yellow-50 rounded-2xl p-4 border border-yellow-200 mb-4">
+                <label className="text-yellow-800 text-xs font-bold uppercase tracking-wider mb-2 block">
+                  Enter Saved Salt (if reveal fails)
+                </label>
+                <div className="flex gap-2 mb-3">
+                  <input
+                    type="text"
+                    value={manualSalt}
+                    onChange={(e) => setManualSalt(e.target.value)}
+                    placeholder="Enter salt number..."
+                    className="flex-1 px-3 py-2 bg-white rounded-xl text-gray-800 outline-none border border-yellow-300 focus:border-yellow-500 text-sm"
+                  />
+                  <button
+                    onClick={() => {
+                      if (manualSalt && commitmentData) {
+                        try {
+                          const salt = BigInt(manualSalt);
+                          // Verify this salt produces the correct commitment
+                          const testCommitment = keccak256(
+                            encodePacked(['uint256', 'uint256', 'uint256'], [commitmentData.amount, commitmentData.minOut, salt])
+                          );
+                          if (testCommitment.toLowerCase() === commitmentData.commitment.toLowerCase()) {
+                            alert('✅ Salt verified! This salt is correct.');
+                          } else {
+                            alert('❌ Salt does not match commitment. The commitment hash would be: ' + testCommitment);
+                          }
+                        } catch {
+                          alert('Invalid salt number');
+                        }
+                      }
+                    }}
+                    className="px-4 py-2 bg-blue-500 text-white rounded-xl font-semibold hover:bg-blue-600 transition-colors text-sm"
+                  >
+                    Verify
+                  </button>
+                </div>
+                <p className="text-xs text-yellow-700">
+                  Commitment: {commitmentData?.commitment.slice(0, 20)}...<br/>
+                  Amount: {commitmentData?.amount.toString()}<br/>
+                  MinOut: {commitmentData?.minOut.toString()}
+                </p>
+              </div>
+            )}
+
+            <div className="bg-gray-50 rounded-2xl p-4">
               <div className="text-gray-500 text-xs font-bold uppercase tracking-wider mb-2">Commitment</div>
               <code className="text-gray-600 font-mono text-xs break-all">
                 {commitmentData.commitment}
@@ -575,8 +917,8 @@ export default function Swap() {
             <div className="flex items-start gap-4">
               <div className="w-8 h-8 rounded-full bg-gradient-to-br from-green-400 to-emerald-500 flex items-center justify-center text-white text-sm font-bold shrink-0">3</div>
               <div>
-                <div className="text-gray-800 font-semibold">Reveal</div>
-                <div className="text-gray-500 text-sm">Execute your trade with the secret salt</div>
+                <div className="text-gray-800 font-semibold">Approve & Reveal</div>
+                <div className="text-gray-500 text-sm">Approve token, then execute the swap with your secret salt</div>
               </div>
             </div>
           </div>

@@ -8,30 +8,42 @@ import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {BalanceDelta, BalanceDeltaLibrary} from "v4-core/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol";
 
+interface ICommitStore {
+    function canReveal(
+        bytes32 commitmentHash,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        uint256 salt
+    ) external view returns (bool);
+    
+    function reveal(
+        bytes32 commitmentHash,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        uint256 salt
+    ) external;
+}
+
 /**
  * @title DarkPoolHook
  * @notice Privacy-preserving DEX using commit-reveal scheme
- * @dev Users commit to swaps with hidden amounts, reveal after time delay
+ * @dev Integrates with CommitStore for verification
  */
 contract DarkPoolHook is IHooks {
     using BeforeSwapDeltaLibrary for BeforeSwapDelta;
 
     IPoolManager public immutable manager;
+    ICommitStore public immutable commitStore;
     
-    struct Commitment {
-        uint256 submitBlock;
-        bool revealed;
-    }
+    event SwapVerified(
+        bytes32 indexed commitmentHash,
+        uint256 amountIn,
+        uint256 minAmountOut
+    );
     
-    mapping(bytes32 => Commitment) public commitments;
-    mapping(bytes32 => bool) public nullifierSpent;
-    
-    uint256 public constant BATCH_DELAY = 10; // blocks
-    
-    event CommitSubmitted(bytes32 indexed commitment, bytes32 indexed nullifier, uint256 revealBlock);
-    
-    constructor(IPoolManager _manager) {
+    constructor(IPoolManager _manager, address _commitStore) {
         manager = _manager;
+        commitStore = ICommitStore(_commitStore);
     }
 
     modifier onlyPoolManager() {
@@ -39,26 +51,36 @@ contract DarkPoolHook is IHooks {
         _;
     }
 
+    /**
+     * @notice Hook called before swap - verifies commitment from CommitStore
+     */
     function beforeSwap(
-        address,
+        address sender,
         PoolKey calldata,
-        SwapParams calldata,
+        SwapParams calldata params,
         bytes calldata hookData
     ) external override onlyPoolManager returns (bytes4, BeforeSwapDelta, uint24) {
-        (bytes32 commitment, bytes32 nullifier) = abi.decode(hookData, (bytes32, bytes32));
+        // Decode hook data: (commitmentHash, salt, minAmountOut)
+        (bytes32 commitmentHash, uint256 salt, uint256 minAmountOut) = abi.decode(
+            hookData, 
+            (bytes32, uint256, uint256)
+        );
         
-        require(commitment != bytes32(0), "Empty commitment");
-        require(!nullifierSpent[nullifier], "Nullifier spent");
-        require(commitments[commitment].submitBlock == 0, "Commitment exists");
+        // Use the actual swap amount from params
+        uint256 amountIn = params.amountSpecified > 0 
+            ? uint256(params.amountSpecified) 
+            : uint256(-params.amountSpecified);
         
-        commitments[commitment] = Commitment({
-            submitBlock: block.number,
-            revealed: false
-        });
+        // Verify commitment is valid and can be revealed
+        require(
+            commitStore.canReveal(commitmentHash, amountIn, minAmountOut, salt),
+            "Invalid or premature commitment"
+        );
         
-        nullifierSpent[nullifier] = true;
+        // Mark as revealed in CommitStore
+        commitStore.reveal(commitmentHash, amountIn, minAmountOut, salt);
         
-        emit CommitSubmitted(commitment, nullifier, block.number + BATCH_DELAY);
+        emit SwapVerified(commitmentHash, amountIn, minAmountOut);
         
         return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }

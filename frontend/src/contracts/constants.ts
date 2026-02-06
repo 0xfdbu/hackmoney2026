@@ -1,9 +1,11 @@
 // constants.ts
 // Sepolia testnet addresses
-export const HOOK_ADDRESS = '0x30646e72c91705fff997af0FDe5b2f1fbFfB0080'; // Commit-reveal hook
+export const HOOK_ADDRESS = '0x1846217Bae61BF26612BD8d9a64b970d525B4080'; // DarkPoolHook
+export const COMMIT_STORE_ADDRESS = '0xdC81d28a1721fcdE86d79Ce26ba3b0bEf24C116C';
 export const POOL_MANAGER_ADDRESS = '0xE03A1074c86CFeDd5C142C4F04F1a1536e203543';
 export const POSITION_MANAGER_ADDRESS = '0x429ba70129df741B2Ca2a85BC3A2a3328e5c09b4'; // v4 PositionManager
 export const PERMIT2_ADDRESS = '0x000000000022D473030F116dDEE9F6B43aC78BA3';
+export const ROUTER_ADDRESS = '0x36b42E07273CD8ECfF1125bF15771AE356F085B1';
 export const BATCH_DURATION = 10; // blocks
 
 // IMPORTANT: Uniswap v4 uses WETH address for pool keys, not the zero address.
