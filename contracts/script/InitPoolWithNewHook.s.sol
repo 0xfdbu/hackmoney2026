@@ -11,7 +11,7 @@ import {CurrencyLibrary, Currency} from "v4-core/types/Currency.sol";
 contract InitPoolWithNewHook is Script {
     function run() external {
         address poolManager = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
-        address hook = 0xD2528A51f7589c11490f3DeA7Fe1a21F9739e080;
+        address hook = 0x5D39BEA27003bDa62B9EF3428cE22D62e9D26080;
         
         // ETH/USDC pool
         address currency0 = address(0); // ETH as native

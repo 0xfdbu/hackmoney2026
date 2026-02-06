@@ -1,0 +1,44 @@
+import * as snarkjs from 'snarkjs';
+import fs from 'fs';
+
+const vKey = JSON.parse(fs.readFileSync('../circuits/verification_key.json'));
+
+const proof = {
+    pi_a: [
+        "21804602113691443573398565427024853812597779726783613939845840763644167954706",
+        "14675966292261060668290429193482514778221026079230655331762444533053133547221"
+    ],
+    pi_b: [
+        [
+            "1634955034229239665557937240635619712047691575513621889444122840304573056224",
+            "6555985065748367344558735827400841879560184866518588255687088560096587022942"
+        ],
+        [
+            "511674341760281575627047281860653330622921697864874607298910438390367488069",
+            "19427069908077868271265048147371870890139186051166527541033275522274873494681"
+        ]
+    ],
+    pi_c: [
+        "18729245987605053969087753978974452929556197514766220557680282956390871106602",
+        "3395389122358101768762613284843213658629233535971598716944585666294844775256"
+    ]
+};
+
+// CIRCUIT ORDER (from circom): 
+// [batch_id, max_price_impact, oracle_price] (public inputs) + [commitment, nullifier, batch_id_out, valid] (outputs)
+// = [batch_id, max_price_impact, oracle_price, commitment, nullifier, batch_id_out, valid]
+const publicSignals = [
+    "1",      // batch_id (input)
+    "10000",  // max_price_impact (input)
+    "200000000000", // oracle_price (input)
+    "13468043774493541282573903797802325966421488021005027815126650173264005873332", // commitment (output)
+    "14969509321192296083583858150834406960669382495771853255563273696969058906816", // nullifier (output)
+    "1",      // batch_id_out (output)
+    "1"       // valid (output)
+];
+
+console.log("Verifying with CIRCUIT order signals:");
+console.log(publicSignals);
+
+const verified = await snarkjs.groth16.verify(vKey, publicSignals, proof);
+console.log("\nLocal verification result:", verified);

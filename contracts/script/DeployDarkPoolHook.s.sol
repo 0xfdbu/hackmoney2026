@@ -11,14 +11,10 @@ contract DeployDarkPoolHook is Script {
     
     function run() external {
         address poolManager = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
-        address verifier = 0xa70cA69922e37ab774610dD905304892AE94472A;
+        address verifier = 0xc4bfe67D312F77b8488E70024d2f028B21eD103e;
         
-        // Uniswap v4 uses the LEAST SIGNIFICANT 14 bits for hook permissions
-        // BEFORE_INITIALIZE_FLAG = 1 << 13 = 0x2000
-        // BEFORE_SWAP_FLAG = 1 << 7 = 0x0080
-        // Target: 0x2000 | 0x0080 = 0x2080
         uint160 target = 0x2080;
-        uint160 mask = 0x3FFF; // 14 bits
+        uint160 mask = 0x3FFF;
 
         bytes memory creationCode = type(DarkPoolHook).creationCode;
         bytes memory constructorArgs = abi.encode(poolManager, verifier);
@@ -28,12 +24,24 @@ contract DeployDarkPoolHook is Script {
         address hookAddress;
         bool found = false;
         
-        // Pre-computed salt for target 0x2080
-        salt = bytes32(uint256(6928));
-        hookAddress = vm.computeCreate2Address(salt, initCodeHash, CREATE2_DEPLOYER);
-        console.log("Using pre-computed salt:", uint256(salt));
-        console.log("Expected address:", hookAddress);
-        console.log("Expected suffix:", uint160(hookAddress) & mask);
+        // Search for valid salt
+        for (uint256 i = 0; i < 5000000; i++) {
+            salt = bytes32(i);
+            hookAddress = vm.computeCreate2Address(salt, initCodeHash, CREATE2_DEPLOYER);
+            
+            if ((uint160(hookAddress) & mask) == target) {
+                console.log("Found salt:", i);
+                console.log("Address:", hookAddress);
+                found = true;
+                break;
+            }
+            
+            if (i % 100000 == 0) {
+                console.log("Mining... checked:", i);
+            }
+        }
+        
+        require(found, "No valid salt found");
 
         vm.startBroadcast();
         DarkPoolHook hook = new DarkPoolHook{salt: salt}(IPoolManager(poolManager), verifier);

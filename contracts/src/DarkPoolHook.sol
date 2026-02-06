@@ -107,21 +107,35 @@ contract DarkPoolHook is IHooks {
             uint[7] memory signals
         ) = abi.decode(hookData, (uint[2], uint[2][2], uint[2], uint[7]));
 
-        (bool success, ) = verifier.staticcall(
+        // Reorder signals for verifier (verifier expects circom's natural order):
+        // Verifier expects: [batch_id, max_price_impact, oracle_price, commitment, nullifier, batch_id_out, valid]
+        // Frontend sends:   [commitment, nullifier, batch_id, valid, batch_id_out, max_price_impact, oracle_price]
+        uint[7] memory verifierSignals;
+        verifierSignals[0] = signals[2]; // batch_id
+        verifierSignals[1] = signals[5]; // max_price_impact
+        verifierSignals[2] = signals[6]; // oracle_price
+        verifierSignals[3] = signals[0]; // commitment
+        verifierSignals[4] = signals[1]; // nullifier
+        verifierSignals[5] = signals[4]; // batch_id_out
+        verifierSignals[6] = signals[3]; // valid
+
+        (bool success, bytes memory returnData) = verifier.staticcall(
             abi.encodeWithSignature(
                 "verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[7])",
-                a, b, c, signals
+                a, b, c, verifierSignals
             )
         );
-        require(success, "Invalid ZK proof");
+        require(success, "Verifier call failed");
+        require(returnData.length > 0, "No return data from verifier");
+        bool proofValid = abi.decode(returnData, (bool));
+        require(proofValid, "Invalid ZK proof");
         
-        // Circuit signal order from circom:
-        // [commitment, nullifier, batch_id, valid, batch_id_out, max_price_impact, oracle_price]
-        require(signals[3] == 1, "Invalid constraints");
+        // Check valid constraint (now at index 6 after reordering)
+        require(verifierSignals[6] == 1, "Invalid constraints");
 
-        uint256 batchId = signals[2]; // batch_id (input)
-        bytes32 commitment = bytes32(signals[0]);
-        bytes32 nullifier = bytes32(signals[1]);
+        uint256 batchId = verifierSignals[0]; // batch_id
+        bytes32 commitment = bytes32(verifierSignals[3]);
+        bytes32 nullifier = bytes32(verifierSignals[4]);
 
         require(!nullifierSpent[nullifier], "Nullifier already spent");
         nullifierSpent[nullifier] = true;

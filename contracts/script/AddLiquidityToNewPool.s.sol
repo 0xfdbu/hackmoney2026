@@ -17,7 +17,7 @@ contract AddLiquidityToNewPool is Script {
     function run() external {
         address payable positionManager = payable(0x429ba70129df741B2Ca2a85BC3A2a3328e5c09b4);
         address permit2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
-        address hook = 0xD2528A51f7589c11490f3DeA7Fe1a21F9739e080;
+        address hook = 0x5D39BEA27003bDa62B9EF3428cE22D62e9D26080;
         
         // Token addresses
         address usdc = 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238;
