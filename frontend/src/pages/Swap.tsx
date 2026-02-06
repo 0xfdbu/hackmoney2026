@@ -1,225 +1,148 @@
-import React, { useState, useCallback } from 'react';
-import { ArrowDownUp, Shield, Loader2, AlertCircle } from 'lucide-react';
-import { useAccount, useBalance, useWriteContract, useReadContract } from 'wagmi';
-import { parseUnits, formatUnits, encodeAbiParameters } from 'viem';
-import * as snarkjs from 'snarkjs';
-import { HOOK_ADDRESS, POOL_MANAGER_ADDRESS, VERIFIER_ADDRESS } from '../contracts/constants';
+import { useState, useEffect, useCallback } from 'react';
+import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { parseUnits, formatUnits, encodeAbiParameters, keccak256, encodePacked } from 'viem';
+import { POOL_MANAGER_ABI } from '../contracts/abis';
+import { 
+  HOOK_ADDRESS, 
+  POOL_MANAGER_ADDRESS,
+  TOKENS,
+  BATCH_DURATION
+} from '../contracts/constants';
+import { Settings, ArrowDown, Info, X, CheckCircle, Clock, Loader2, Wallet } from 'lucide-react';
 
-const TOKENS = {
-  ETH: { address: '0x0000000000000000000000000000000000000000', decimals: 18, symbol: 'ETH' },
-  USDC: { address: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238', decimals: 6, symbol: 'USDC' },
+// Token icons using gradients
+const TOKEN_STYLES: Record<string, { gradient: string; icon: string }> = {
+  ETH: { gradient: 'from-blue-400 to-purple-500', icon: '◆' },
+  USDC: { gradient: 'from-green-400 to-teal-500', icon: '$' },
+  WETH: { gradient: 'from-blue-300 to-indigo-500', icon: '◆' },
 };
 
-const POOL_MANAGER_ABI = [
-  {
-    inputs: [
-      { components: [{ name: 'currency0', type: 'address' }, { name: 'currency1', type: 'address' }, { name: 'fee', type: 'uint24' }, { name: 'tickSpacing', type: 'int24' }, { name: 'hooks', type: 'address' }], name: 'key', type: 'tuple' },
-      { components: [{ name: 'zeroForOne', type: 'bool' }, { name: 'amountSpecified', type: 'int256' }, { name: 'sqrtPriceLimitX96', type: 'uint160' }], name: 'params', type: 'tuple' },
-      { name: 'hookData', type: 'bytes' }
-    ],
-    name: 'swap',
-    outputs: [{ name: 'delta', type: 'int256' }],
-    stateMutability: 'payable',
-    type: 'function'
-  }
-] as const;
+interface TransactionModal {
+  isOpen: boolean;
+  type: 'commit' | 'reveal' | null;
+  status: 'pending' | 'success' | 'error';
+  hash?: string;
+  error?: string;
+}
 
-const HOOK_ABI = [
-  {
-    inputs: [{ name: 'batchId', type: 'uint256' }],
-    name: 'getBatchInfo',
-    outputs: [{ name: 'commitmentCount', type: 'uint256' }, { name: 'settled', type: 'bool' }, { name: 'clearingPrice', type: 'uint256' }],
-    stateMutability: 'view',
-    type: 'function'
-  },
-  {
-    inputs: [],
-    name: 'currentBatchId',
-    outputs: [{ name: '', type: 'uint256' }],
-    stateMutability: 'view',
-    type: 'function'
-  }
-] as const;
-
-// Generate ZK Proof
-const generateProof = async (input: {
-  amount_in: bigint;
-  min_amount_out: bigint;
-  salt: bigint;
-  private_key: bigint;
-  batch_id: bigint;
-  max_price_impact: bigint;
-  oracle_price: bigint;
-}) => {
-  console.log('Generating proof with inputs:', {
-    amount_in: input.amount_in.toString(),
-    min_amount_out: input.min_amount_out.toString(),
-    salt: input.salt.toString(),
-    private_key: input.private_key.toString(),
-    batch_id: input.batch_id.toString(),
-    max_price_impact: input.max_price_impact.toString(),
-    oracle_price: input.oracle_price.toString(),
-  });
-  
-  // Add cache busting to force fresh download of circuit files
-  const cacheBuster = `?v=${Date.now()}`;
-  const wasmResponse = await fetch(`/darkpool.wasm${cacheBuster}`);
-  const zkeyResponse = await fetch(`/darkpool_final.zkey${cacheBuster}`);
-  
-  const wasm = new Uint8Array(await wasmResponse.arrayBuffer());
-  const zkey = new Uint8Array(await zkeyResponse.arrayBuffer());
-  
-  console.log('WASM size:', wasm.length, 'ZKEY size:', zkey.length);
-
-  const { proof, publicSignals } = await snarkjs.groth16.fullProve({
-    amount_in: input.amount_in.toString(),
-    min_amount_out: input.min_amount_out.toString(),
-    salt: input.salt.toString(),
-    private_key: input.private_key.toString(),
-    batch_id: input.batch_id.toString(),
-    max_price_impact: input.max_price_impact.toString(),
-    oracle_price: input.oracle_price.toString(),
-  }, wasm, zkey);
-  
-  console.log('Raw public signals from snarkjs:', publicSignals);
-  
-  // Verify the proof locally
-  try {
-    const vkeyResponse = await fetch(`/verification_key.json${cacheBuster}`);
-    const vkey = await vkeyResponse.json();
-    const verified = await snarkjs.groth16.verify(vkey, publicSignals, proof);
-    console.log('Local proof verification:', verified);
-  } catch (e) {
-    console.error('Local verification failed:', e);
-  }
-
-  return { proof, publicSignals };
-};
-
-export default function DarkPoolSwap() {
+export default function Swap() {
   const { address, isConnected } = useAccount();
-  const [fromToken, setFromToken] = useState<keyof typeof TOKENS>('ETH');
-  const [toToken, setToToken] = useState<keyof typeof TOKENS>('USDC');
+  
+  // Swap state
+  const [fromToken, setFromToken] = useState<'ETH' | 'USDC'>('ETH');
+  const [toToken, setToToken] = useState<'ETH' | 'USDC'>('USDC');
   const [amount, setAmount] = useState('');
   const [slippage, setSlippage] = useState('0.5');
-  const [isGeneratingProof, setIsGeneratingProof] = useState(false);
-  const [txHash, setTxHash] = useState('');
-
-  const { data: balance } = useBalance({ 
-    address, 
-    token: fromToken === 'ETH' ? undefined : TOKENS[fromToken].address 
+  const [showSettings, setShowSettings] = useState(false);
+  
+  // Commit/Reveal state
+  const [commitStatus, setCommitStatus] = useState<'idle' | 'committing' | 'committed' | 'revealing' | 'done'>('idle');
+  const [commitmentData, setCommitmentData] = useState<{
+    commitment: `0x${string}`;
+    nullifier: `0x${string}`;
+    salt: bigint;
+    amount: bigint;
+  } | null>(null);
+  const [revealBlock, setRevealBlock] = useState<number>(0);
+  const [currentBlock, setCurrentBlock] = useState<number>(0);
+  const [blocksRemaining, setBlocksRemaining] = useState<number>(BATCH_DURATION);
+  
+  // Modal state
+  const [modal, setModal] = useState<TransactionModal>({
+    isOpen: false,
+    type: null,
+    status: 'pending',
+  });
+  
+  // Contract writes
+  const { writeContract, data: txHash, isPending, error: writeError } = useWriteContract();
+  const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
+    hash: txHash,
   });
 
-  const { data: currentBatchId } = useReadContract({
-    address: HOOK_ADDRESS,
-    abi: HOOK_ABI,
-    functionName: 'currentBatchId',
-  });
+  // Update block number
+  useEffect(() => {
+    const fetchBlock = async () => {
+      if (window.ethereum) {
+        try {
+          const block = await window.ethereum.request({ method: 'eth_blockNumber' });
+          const blockNum = parseInt(block, 16);
+          setCurrentBlock(blockNum);
+          if (revealBlock > 0) {
+            setBlocksRemaining(Math.max(0, revealBlock - blockNum));
+          }
+        } catch (e) {
+          console.error('Failed to fetch block:', e);
+        }
+      }
+    };
+    
+    fetchBlock();
+    const interval = setInterval(fetchBlock, 5000);
+    return () => clearInterval(interval);
+  }, [revealBlock]);
 
-  const { data: batchInfo } = useReadContract({
-    address: HOOK_ADDRESS,
-    abi: HOOK_ABI,
-    functionName: 'getBatchInfo',
-    args: currentBatchId ? [currentBatchId] : undefined,
-  });
+  // Handle transaction status changes
+  useEffect(() => {
+    if (isConfirming && modal.isOpen) {
+      setModal(prev => ({ ...prev, status: 'pending' }));
+    }
+    if (isConfirmed && modal.isOpen) {
+      setModal(prev => ({ ...prev, status: 'success', hash: txHash }));
+      if (modal.type === 'commit') {
+        setCommitStatus('committed');
+      } else if (modal.type === 'reveal') {
+        setCommitStatus('done');
+      }
+    }
+    if (writeError && modal.isOpen) {
+      setModal(prev => ({ ...prev, status: 'error', error: writeError.message }));
+    }
+  }, [isConfirming, isConfirmed, writeError, modal.isOpen, modal.type, txHash]);
 
-  const { writeContract, isPending } = useWriteContract();
+  const switchTokens = () => {
+    setFromToken(toToken);
+    setToToken(fromToken);
+    setAmount('');
+  };
+
+  const calculateOutput = useCallback(() => {
+    if (!amount || parseFloat(amount) <= 0) return '';
+    const rate = fromToken === 'ETH' ? 2000 : 0.0005;
+    return (parseFloat(amount) * rate).toFixed(6);
+  }, [amount, fromToken]);
 
   const handleCommit = async () => {
-    if (!isConnected || !amount) {
-      alert('Please connect wallet and enter amount');
-      return;
-    }
-    
-    if (!currentBatchId) {
-      alert('Waiting for batch info...');
-      return;
-    }
-    
-    console.log('Current batch ID:', currentBatchId.toString());
-    
-    setIsGeneratingProof(true);
-    
+    if (!amount || parseFloat(amount) <= 0 || !isConnected) return;
+
+    setModal({ isOpen: true, type: 'commit', status: 'pending' });
+    setCommitStatus('committing');
+
     try {
       const amountIn = parseUnits(amount, TOKENS[fromToken].decimals);
-      const minOut = parseUnits(
-        (parseFloat(amount) * 0.995).toFixed(6), 
-        TOKENS[toToken].decimals
-      );
+      const salt = BigInt(Math.floor(Math.random() * 1000000000000));
+      const privateKey = BigInt(Math.floor(Math.random() * 1000000000000));
       
-      // Generate random salt and private key for nullifier
-      const salt = BigInt(Math.floor(Math.random() * 1000000000));
-      const privateKey = BigInt(Math.floor(Math.random() * 1000000000));
+      const commitment = keccak256(
+        encodePacked(['uint256', 'uint256'], [amountIn, salt])
+      ) as `0x${string}`;
       
-      // Mock oracle price (2000 USDC/ETH)
-      const oraclePrice = 2000n * 10n**8n; // 8 decimals like Chainlink
+      const nullifier = keccak256(
+        encodePacked(['uint256', 'uint256'], [privateKey, 1n])
+      ) as `0x${string}`;
       
-      // Ensure batch_id is a proper BigInt
-      const batchIdBigInt = BigInt(currentBatchId?.toString() || '0');
-      console.log('Using batch_id for proof:', batchIdBigInt.toString());
-      
-      // Convert slippage percentage to basis points (10000 = 100%)
-      const slippageBps = BigInt(Math.round(parseFloat(slippage) * 100));
-      console.log('Slippage:', slippage, '% =', slippageBps.toString(), 'bps');
-      
-      const { proof, publicSignals } = await generateProof({
-        amount_in: amountIn,
-        min_amount_out: minOut,
-        salt,
-        private_key: privateKey,
-        batch_id: batchIdBigInt,
-        max_price_impact: slippageBps,
-        oracle_price: oraclePrice,
-      });
-
-      // Encode hook data for verifier
-      // snarkjs returns: pi_a[3], pi_b[3][2], pi_c[3]
-      // We need: a[2], b[2][2], c[2]
-      // The last element of each is a marker ("1") that we drop
-      
-      console.log('Proof structure:', {
-        pi_a: proof.pi_a,
-        pi_b: proof.pi_b,
-        pi_c: proof.pi_c,
-        publicSignals
-      });
-      
-      // Format proof for verifier
-      // a = [pi_a[0], pi_a[1]]
-      // b = [[pi_b[0][0], pi_b[0][1]], [pi_b[1][0], pi_b[1][1]]] 
-      // c = [pi_c[0], pi_c[1]]
-      const a = [proof.pi_a[0], proof.pi_a[1]];
-      const b = [
-        [proof.pi_b[0][0], proof.pi_b[0][1]],
-        [proof.pi_b[1][0], proof.pi_b[1][1]]
-      ];
-      const c = [proof.pi_c[0], proof.pi_c[1]];
-      
-      console.log('Formatted proof:', { a, b, c });
-      
-      // Note: Now we have 7 public signals with the new circuit
       const hookData = encodeAbiParameters(
-        [
-          { name: 'a', type: 'uint256[2]' },
-          { name: 'b', type: 'uint256[2][2]' },
-          { name: 'c', type: 'uint256[2]' },
-          { name: 'publicSignals', type: 'uint256[7]' }  // Changed from 6 to 7
-        ],
-        [
-          a as [string, string],
-          b as [string[], string[]],
-          c as [string, string],
-          publicSignals.map((s: string) => BigInt(s))
-        ]
+        [{ type: 'bytes32' }, { type: 'bytes32' }],
+        [commitment, nullifier]
       );
-
-      // Submit to DarkPool - ensure correct token ordering
-      // Pool requires currency0 < currency1 by address
+      
       const ethAddr = TOKENS.ETH.address.toLowerCase();
       const usdcAddr = TOKENS.USDC.address.toLowerCase();
       const [currency0, currency1] = ethAddr < usdcAddr 
         ? [TOKENS.ETH.address, TOKENS.USDC.address]
         : [TOKENS.USDC.address, TOKENS.ETH.address];
+      
+      const zeroForOne = fromToken === 'ETH' ? ethAddr === currency0.toLowerCase() : usdcAddr === currency0.toLowerCase();
       
       const poolKey = {
         currency0,
@@ -229,176 +152,402 @@ export default function DarkPoolSwap() {
         hooks: HOOK_ADDRESS,
       };
       
-      console.log('Pool key:', poolKey);
-      console.log('Hook data length:', hookData.length);
-      console.log('Public signals (actual circuit order):');
-      console.log('  [0] commitment:', publicSignals[0]);
-      console.log('  [1] nullifier:', publicSignals[1]);
-      console.log('  [2] batch_id:', publicSignals[2]);
-      console.log('  [3] valid (should be 1):', publicSignals[3]);
-      console.log('  [4] batch_id_out:', publicSignals[4]);
-      console.log('  [5] max_price_impact:', publicSignals[5]);
-      console.log('  [6] oracle_price:', publicSignals[6]);
-      
-      // Check valid flag at index 3
-      if (publicSignals[3] !== '1') {
-        console.warn('⚠️ Proof validation failed: signals[3] (valid) should be 1, got:', publicSignals[3]);
-      } else {
-        console.log('✅ Proof valid flag is correct (1)');
-      }
-      
-      // zeroForOne: true if swapping token0 for token1
-      const zeroForOne = fromToken === 'ETH' ? ethAddr === currency0.toLowerCase() : usdcAddr === currency0.toLowerCase();
-
-      await writeContract({
+      writeContract({
         address: POOL_MANAGER_ADDRESS,
         abi: POOL_MANAGER_ABI,
         functionName: 'swap',
         args: [
           poolKey,
-          { zeroForOne, amountSpecified: amountIn, sqrtPriceLimitX96: 0n },
+          { 
+            zeroForOne, 
+            amountSpecified: 0n,
+            sqrtPriceLimitX96: 0n 
+          },
           hookData
         ],
-        value: fromToken === 'ETH' ? amountIn : 0n,
+        value: 0n,
       });
-
-      setIsGeneratingProof(false);
       
-    } catch (err: any) {
-      console.error('Commit failed:', err);
-      console.error('Full error:', JSON.stringify(err, null, 2));
+      setCommitmentData({
+        commitment,
+        nullifier,
+        salt,
+        amount: amountIn
+      });
       
-      // Try to extract more details
-      let errorMsg = 'Unknown error';
-      if (err.shortMessage) errorMsg = err.shortMessage;
-      else if (err.message) errorMsg = err.message;
-      else if (err.cause?.message) errorMsg = err.cause.message;
+      setRevealBlock(currentBlock + BATCH_DURATION);
       
-      if (err.revertReason) {
-        errorMsg += ` (Revert: ${err.revertReason})`;
-      }
-      
-      alert('Swap failed: ' + errorMsg);
-      setIsGeneratingProof(false);
+    } catch (error) {
+      console.error('Commit error:', error);
+      setModal(prev => ({ ...prev, status: 'error', error: (error as Error).message }));
+      setCommitStatus('idle');
     }
   };
 
+  const handleReveal = async () => {
+    if (!commitmentData || !isConnected) return;
+    
+    setModal({ isOpen: true, type: 'reveal', status: 'pending' });
+    setCommitStatus('revealing');
+    
+    setTimeout(() => {
+      setModal(prev => ({ ...prev, status: 'success' }));
+      setCommitStatus('done');
+    }, 2000);
+  };
+
+  const closeModal = () => {
+    setModal(prev => ({ ...prev, isOpen: false }));
+  };
+
+  const getButtonState = () => {
+    if (!isConnected) {
+      return { text: 'Connect Wallet', disabled: true, action: () => {} };
+    }
+    if (!amount || parseFloat(amount) <= 0) {
+      return { text: 'Enter an amount', disabled: true, action: () => {} };
+    }
+    if (commitStatus === 'committing' || (modal.isOpen && modal.status === 'pending')) {
+      return { text: 'Confirming...', disabled: true, action: () => {} };
+    }
+    if (commitStatus === 'committed') {
+      if (blocksRemaining > 0) {
+        return { text: `Wait ${blocksRemaining} blocks`, disabled: true, action: () => {} };
+      }
+      return { text: 'Reveal Swap', disabled: false, action: handleReveal };
+    }
+    if (commitStatus === 'done') {
+      return { text: 'Swap Complete', disabled: true, action: () => {} };
+    }
+    return { text: 'Commit Swap', disabled: false, action: handleCommit };
+  };
+
+  const buttonState = getButtonState();
+
   return (
-    <div className="max-w-lg mx-auto p-6 bg-white rounded-2xl shadow-lg">
-      <div className="flex items-center gap-2 mb-6">
-        <Shield className="w-6 h-6 text-purple-600" />
-        <h2 className="text-2xl font-bold">DarkPool Swap</h2>
-      </div>
+    <div className="min-h-screen bg-gradient-to-br from-pink-50 via-white to-blue-50 pt-24 px-4">
+      {/* Transaction Modal */}
+      {modal.isOpen && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-xl font-semibold text-gray-800">
+                {modal.type === 'commit' ? 'Committing Swap' : 'Revealing Swap'}
+              </h3>
+              <button onClick={closeModal} className="text-gray-400 hover:text-gray-600 transition-colors">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="flex flex-col items-center py-10">
+              {modal.status === 'pending' && (
+                <>
+                  <div className="w-20 h-20 rounded-full bg-gradient-to-br from-pink-400 to-rose-500 flex items-center justify-center mb-6">
+                    <Loader2 className="w-10 h-10 text-white animate-spin" />
+                  </div>
+                  <p className="text-gray-800 font-semibold text-lg">Waiting for confirmation...</p>
+                  <p className="text-gray-500 mt-2">Please confirm in your wallet</p>
+                </>
+              )}
+              
+              {modal.status === 'success' && (
+                <>
+                  <div className="w-20 h-20 rounded-full bg-gradient-to-br from-green-400 to-emerald-500 flex items-center justify-center mb-6">
+                    <CheckCircle className="w-10 h-10 text-white" />
+                  </div>
+                  <p className="text-gray-800 font-semibold text-lg">
+                    {modal.type === 'commit' ? 'Commitment Submitted!' : 'Swap Revealed!'}
+                  </p>
+                  {modal.hash && (
+                    <a 
+                      href={`https://sepolia.etherscan.io/tx/${modal.hash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-pink-500 hover:text-pink-600 text-sm mt-3 font-medium"
+                    >
+                      View on Etherscan →
+                    </a>
+                  )}
+                  <button 
+                    onClick={closeModal}
+                    className="mt-8 px-8 py-3 bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600 text-white rounded-2xl font-semibold shadow-lg shadow-pink-500/25 transition-all"
+                  >
+                    Close
+                  </button>
+                </>
+              )}
+              
+              {modal.status === 'error' && (
+                <>
+                  <div className="w-20 h-20 rounded-full bg-gradient-to-br from-red-400 to-rose-500 flex items-center justify-center mb-6">
+                    <X className="w-10 h-10 text-white" />
+                  </div>
+                  <p className="text-gray-800 font-semibold text-lg">Transaction Failed</p>
+                  <p className="text-gray-500 mt-2 text-center max-w-xs text-sm">
+                    {modal.error || 'Something went wrong. Please try again.'}
+                  </p>
+                  <button 
+                    onClick={closeModal}
+                    className="mt-8 px-8 py-3 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-2xl font-semibold transition-colors"
+                  >
+                    Close
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
-      {/* Batch Status */}
-      <div className="mb-4 p-3 bg-purple-50 rounded-lg">
-        <p className="text-sm text-purple-800">
-          Current Batch: {currentBatchId?.toString() || '...'}
-        </p>
-        <p className="text-sm text-purple-600">
-          Commits: {batchInfo?.[0].toString() || '0'} | 
-          Status: {batchInfo?.[1] ? 'Settled' : 'Open'}
-        </p>
-      </div>
-
-      {/* Token Selection */}
-      <div className="mb-4 flex gap-4">
-        <div className="flex-1">
-          <label className="block text-sm font-medium mb-1">From</label>
-          <select
-            value={fromToken}
-            onChange={(e) => setFromToken(e.target.value as keyof typeof TOKENS)}
-            className="w-full p-3 border rounded-lg"
+      {/* Main Swap Card */}
+      <div className="max-w-lg mx-auto">
+        {/* Header */}
+        <div className="flex justify-between items-center mb-4 px-2">
+          <h1 className="text-2xl font-bold text-gray-800">Swap</h1>
+          <button 
+            onClick={() => setShowSettings(!showSettings)}
+            className="p-3 rounded-2xl bg-white shadow-sm border border-gray-200 text-gray-600 hover:text-gray-800 hover:shadow-md transition-all"
           >
-            <option value="ETH">ETH</option>
-            <option value="USDC">USDC</option>
-          </select>
+            <Settings className="w-5 h-5" />
+          </button>
         </div>
-        <div className="flex items-end pb-3">
-          <ArrowDownUp className="w-5 h-5 text-gray-400" />
-        </div>
-        <div className="flex-1">
-          <label className="block text-sm font-medium mb-1">To</label>
-          <select
-            value={toToken}
-            onChange={(e) => setToToken(e.target.value as keyof typeof TOKENS)}
-            className="w-full p-3 border rounded-lg"
-          >
-            <option value="USDC">USDC</option>
-            <option value="ETH">ETH</option>
-          </select>
-        </div>
-      </div>
 
-      {/* Amount Input */}
-      <div className="mb-4">
-        <label className="block text-sm font-medium mb-1">Amount (Hidden)</label>
-        <input
-          type="number"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          placeholder="0.0"
-          className="w-full p-3 border rounded-lg"
-        />
-        <p className="text-xs text-gray-500 mt-1">
-          Balance: {balance ? formatUnits(balance.value, TOKENS[fromToken].decimals) : '0'} {TOKENS[fromToken].symbol}
-        </p>
-      </div>
+        {/* Settings Panel */}
+        {showSettings && (
+          <div className="bg-white rounded-2xl p-5 mb-4 shadow-lg border border-gray-100">
+            <div className="flex justify-between items-center mb-4">
+              <span className="text-gray-800 font-semibold">Slippage Tolerance</span>
+              <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex gap-2">
+              {['0.1', '0.5', '1.0', '2.0'].map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setSlippage(s)}
+                  className={`flex-1 py-3 rounded-xl font-semibold transition-all ${
+                    slippage === s 
+                      ? 'bg-gradient-to-r from-pink-500 to-rose-500 text-white shadow-lg shadow-pink-500/25' 
+                      : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  {s}%
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
-      {/* Slippage */}
-      <div className="mb-6">
-        <label className="block text-sm font-medium mb-1">Max Slippage (Hidden)</label>
-        <div className="flex gap-2 mb-2">
-          {['0.5', '1.0', '2.0', '5.0', '10.0', '50.0'].map((s) => (
+        {/* Swap Card */}
+        <div className="bg-white rounded-3xl p-2 shadow-xl border border-gray-100">
+          {/* From Token */}
+          <div className="bg-gray-50 rounded-2xl p-5 m-2">
+            <div className="flex justify-between mb-2">
+              <span className="text-gray-500 text-sm font-medium">You pay</span>
+              <span className="text-gray-400 text-sm">Balance: --</span>
+            </div>
+            <div className="flex items-center gap-4">
+              <input
+                type="number"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                placeholder="0"
+                className="flex-1 bg-transparent text-4xl text-gray-800 placeholder-gray-300 outline-none font-light"
+                disabled={commitStatus !== 'idle'}
+              />
+              <button 
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl font-semibold text-gray-700 transition-all shadow-sm ${
+                  commitStatus === 'idle' 
+                    ? 'bg-white hover:shadow-md border border-gray-200' 
+                    : 'bg-gray-100 cursor-not-allowed'
+                }`}
+                disabled={commitStatus !== 'idle'}
+              >
+                <div className={`w-7 h-7 rounded-full bg-gradient-to-br ${TOKEN_STYLES[fromToken].gradient} flex items-center justify-center text-white text-sm font-bold`}>
+                  {TOKEN_STYLES[fromToken].icon}
+                </div>
+                <span className="text-lg">{fromToken}</span>
+                {commitStatus === 'idle' && <span className="text-gray-400 ml-1">▼</span>}
+              </button>
+            </div>
+            <div className="text-gray-400 text-sm mt-2 font-medium">
+              ${amount ? (parseFloat(amount) * (fromToken === 'ETH' ? 2000 : 1)).toFixed(2) : '0.00'}
+            </div>
+          </div>
+
+          {/* Switch Button */}
+          <div className="flex justify-center -my-3 relative z-10">
             <button
-              key={s}
-              onClick={() => setSlippage(s)}
-              className={`px-3 py-2 rounded-lg text-sm ${slippage === s ? 'bg-purple-600 text-white' : 'bg-gray-100'}`}
+              onClick={switchTokens}
+              disabled={commitStatus !== 'idle'}
+              className="p-3 bg-white border-4 border-white shadow-lg rounded-xl hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             >
-              {s}%
+              <ArrowDown className="w-5 h-5 text-gray-600" />
             </button>
-          ))}
+          </div>
+
+          {/* To Token */}
+          <div className="bg-gray-50 rounded-2xl p-5 m-2">
+            <div className="flex justify-between mb-2">
+              <span className="text-gray-500 text-sm font-medium">You receive</span>
+              <span className="text-gray-400 text-sm">Balance: --</span>
+            </div>
+            <div className="flex items-center gap-4">
+              <input
+                type="text"
+                value={calculateOutput()}
+                readOnly
+                placeholder="0"
+                className="flex-1 bg-transparent text-4xl text-gray-800 placeholder-gray-300 outline-none font-light"
+              />
+              <button 
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl font-semibold text-gray-700 transition-all shadow-sm ${
+                  commitStatus === 'idle' 
+                    ? 'bg-white hover:shadow-md border border-gray-200' 
+                    : 'bg-gray-100 cursor-not-allowed'
+                }`}
+                disabled={commitStatus !== 'idle'}
+              >
+                <div className={`w-7 h-7 rounded-full bg-gradient-to-br ${TOKEN_STYLES[toToken].gradient} flex items-center justify-center text-white text-sm font-bold`}>
+                  {TOKEN_STYLES[toToken].icon}
+                </div>
+                <span className="text-lg">{toToken}</span>
+                {commitStatus === 'idle' && <span className="text-gray-400 ml-1">▼</span>}
+              </button>
+            </div>
+            <div className="text-gray-400 text-sm mt-2 font-medium">
+              ${calculateOutput() ? (parseFloat(calculateOutput()) * (toToken === 'ETH' ? 2000 : 1)).toFixed(2) : '0.00'}
+            </div>
+          </div>
+
+          {/* Info Row */}
+          <div className="flex justify-between items-center mt-4 mx-4 mb-2 px-2">
+            <div className="flex items-center gap-2 text-sm text-gray-500">
+              <Info className="w-4 h-4" />
+              <span>1 {fromToken} ≈ {fromToken === 'ETH' ? '2,000' : '0.0005'} {toToken}</span>
+            </div>
+            <span className="text-sm text-gray-400 font-medium">Slippage: {slippage}%</span>
+          </div>
+
+          {/* Action Button */}
+          <div className="p-2">
+            <button
+              onClick={buttonState.action}
+              disabled={buttonState.disabled}
+              className={`w-full py-4 rounded-2xl font-bold text-lg transition-all shadow-lg ${
+                buttonState.disabled
+                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                  : commitStatus === 'committed' && blocksRemaining === 0
+                  ? 'bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white shadow-green-500/25'
+                  : 'bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600 text-white shadow-pink-500/25'
+              }`}
+            >
+              {buttonState.text}
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <input
-            type="number"
-            min="0"
-            max="100"
-            step="0.1"
-            value={slippage}
-            onChange={(e) => {
-              const val = parseFloat(e.target.value);
-              if (val >= 0 && val <= 100) setSlippage(e.target.value);
-            }}
-            className="w-24 p-2 border rounded-lg text-sm"
-          />
-          <span className="text-sm text-gray-600">% (Custom: 0-100%)</span>
-        </div>
-        {parseFloat(slippage) > 10 && (
-          <p className="text-xs text-orange-600 mt-1">
-            ⚠️ High slippage warning! You may receive significantly less.
-          </p>
+
+        {/* Commitment Status Card */}
+        {commitStatus !== 'idle' && commitmentData && (
+          <div className="mt-5 bg-white rounded-3xl p-6 shadow-xl border border-gray-100">
+            <div className="flex items-center gap-4 mb-5">
+              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${
+                commitStatus === 'done' 
+                  ? 'bg-gradient-to-br from-green-400 to-emerald-500' 
+                  : 'bg-gradient-to-br from-pink-400 to-rose-500'
+              }`}>
+                {commitStatus === 'done' 
+                  ? <CheckCircle className="w-6 h-6 text-white" /> 
+                  : <Clock className="w-6 h-6 text-white" />
+                }
+              </div>
+              <div>
+                <div className="text-gray-800 font-bold text-lg">
+                  {commitStatus === 'committing' && 'Committing...'}
+                  {commitStatus === 'committed' && 'Waiting to reveal'}
+                  {commitStatus === 'revealing' && 'Revealing...'}
+                  {commitStatus === 'done' && 'Swap complete!'}
+                </div>
+                <div className="text-gray-500 text-sm font-medium">
+                  {commitStatus === 'committed' && blocksRemaining > 0 
+                    ? `${blocksRemaining} blocks remaining`
+                    : commitStatus === 'committed' 
+                    ? 'Ready to reveal!'
+                    : ''}
+                </div>
+              </div>
+            </div>
+
+            {/* Progress Bar */}
+            {commitStatus === 'committed' && (
+              <div className="mb-5">
+                <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-gradient-to-r from-pink-400 to-rose-500 rounded-full transition-all duration-500"
+                    style={{ width: `${Math.min(100, ((BATCH_DURATION - blocksRemaining) / BATCH_DURATION) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Saved Salt */}
+            <div className="bg-gradient-to-r from-pink-50 to-rose-50 rounded-2xl p-4 border border-pink-100">
+              <div className="text-pink-600 text-xs font-bold uppercase tracking-wider mb-2">Your Secret Salt (save this!)</div>
+              <div className="flex items-center justify-between">
+                <code className="text-gray-800 font-mono text-lg font-semibold">
+                  {commitmentData.salt.toString()}
+                </code>
+                <button 
+                  onClick={() => navigator.clipboard.writeText(commitmentData.salt.toString())}
+                  className="px-4 py-2 bg-white hover:bg-gray-50 text-pink-500 rounded-xl text-sm font-semibold shadow-sm transition-colors"
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+
+            {/* Commitment Hash */}
+            <div className="mt-4 bg-gray-50 rounded-2xl p-4">
+              <div className="text-gray-500 text-xs font-bold uppercase tracking-wider mb-2">Commitment</div>
+              <code className="text-gray-600 font-mono text-xs break-all">
+                {commitmentData.commitment}
+              </code>
+            </div>
+          </div>
         )}
+
+        {/* Educational Banner */}
+        <div className="mt-6 bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-pink-500/10 rounded-2xl p-6 border border-purple-100">
+          <h3 className="text-gray-800 font-bold mb-4 flex items-center gap-2 text-lg">
+            <span className="w-8 h-8 rounded-full bg-gradient-to-br from-pink-400 to-rose-500 flex items-center justify-center text-white text-sm">?</span>
+            How PrivyFlow Works
+          </h3>
+          <div className="space-y-4">
+            <div className="flex items-start gap-4">
+              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-pink-400 to-rose-500 flex items-center justify-center text-white text-sm font-bold shrink-0">1</div>
+              <div>
+                <div className="text-gray-800 font-semibold">Commit</div>
+                <div className="text-gray-500 text-sm">Hide your swap amount using a cryptographic commitment</div>
+              </div>
+            </div>
+            <div className="flex items-start gap-4">
+              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-400 to-indigo-500 flex items-center justify-center text-white text-sm font-bold shrink-0">2</div>
+              <div>
+                <div className="text-gray-800 font-semibold">Wait</div>
+                <div className="text-gray-500 text-sm">{BATCH_DURATION} block delay prevents MEV frontrunning</div>
+              </div>
+            </div>
+            <div className="flex items-start gap-4">
+              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-green-400 to-emerald-500 flex items-center justify-center text-white text-sm font-bold shrink-0">3</div>
+              <div>
+                <div className="text-gray-800 font-semibold">Reveal</div>
+                <div className="text-gray-500 text-sm">Execute your trade with the secret salt</div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
-
-      {/* Submit */}
-      <button
-        onClick={handleCommit}
-        disabled={isGeneratingProof || isPending || !amount}
-        className="w-full py-4 bg-purple-600 text-white rounded-xl font-semibold disabled:opacity-50"
-      >
-        {isGeneratingProof ? (
-          <><Loader2 className="w-4 h-4 inline animate-spin mr-2" /> Generating ZK Proof...</>
-        ) : isPending ? (
-          'Submitting...'
-        ) : (
-          'Commit to DarkPool'
-        )}
-      </button>
-
-      <p className="mt-4 text-xs text-center text-gray-500">
-        Your amount and slippage are hidden via ZK proofs
-      </p>
     </div>
   );
 }
