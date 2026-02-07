@@ -63,7 +63,7 @@ PHASE 1: COMMIT                    PHASE 2: WAIT                    PHASE 3: REV
 |----------|---------|-------------|
 | **CommitStore** | `0xdC81d28a1721fcdE86d79Ce26ba3b0bEf24C116C` | Stores commitments with 10-block delay |
 | **DarkPoolHook** | `0x1846217Bae61BF26612BD8d9a64b970d525B4080` | Uniswap v4 hook for verification |
-| **SwapRouter** | `0x36b42E07273CD8ECfF1125bF15771AE356F085B1` | Handles swap routing and settlement |
+| **SwapRouter** | ` 0xB276FA545ed8848EC49b2a925c970313253B90Ba` | Handles swap routing and settlement |
 | **PoolManager** | `0xE03A1074c86CFeDd5C142C4F04F1a1536e203543` | Uniswap v4 PoolManager (Sepolia) |
 | **USDC** | `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` | Test USDC token |
 | **WETH** | `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14` | Wrapped ETH token |

@@ -9,37 +9,20 @@ import {BalanceDelta, BalanceDeltaLibrary} from "v4-core/types/BalanceDelta.sol"
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary, toBeforeSwapDelta} from "v4-core/types/BeforeSwapDelta.sol";
 
 interface ICommitStore {
-    function canReveal(
-        bytes32 commitmentHash,
-        uint256 amountIn,
-        uint256 minAmountOut,
-        uint256 salt
-    ) external view returns (bool);
-    
-    function reveal(
-        bytes32 commitmentHash,
-        uint256 amountIn,
-        uint256 minAmountOut,
-        uint256 salt
-    ) external;
+    function canReveal(bytes32, uint256, uint256, uint256) external view returns (bool);
+    function reveal(bytes32, uint256, uint256, uint256) external;
 }
 
-/**
- * @title DarkPoolHook
- * @notice Privacy-preserving DEX using commit-reveal scheme
- * @dev Integrates with CommitStore for verification
- */
 contract DarkPoolHook is IHooks {
     using BeforeSwapDeltaLibrary for BeforeSwapDelta;
 
     IPoolManager public immutable manager;
     ICommitStore public immutable commitStore;
     
-    event SwapVerified(
-        bytes32 indexed commitmentHash,
-        uint256 amountIn,
-        uint256 minAmountOut
-    );
+    error NotPoolManager();
+    error InvalidCommitment();
+    
+    event SwapVerified(bytes32 indexed commitmentHash, uint256 amountIn, uint256 minAmountOut, address indexed user);
     
     constructor(IPoolManager _manager, address _commitStore) {
         manager = _manager;
@@ -47,58 +30,35 @@ contract DarkPoolHook is IHooks {
     }
 
     modifier onlyPoolManager() {
-        require(msg.sender == address(manager), "Not PoolManager");
+        if (msg.sender != address(manager)) revert NotPoolManager();
         _;
     }
 
-    /**
-     * @notice Hook called before swap - verifies commitment from CommitStore
-     */
-    function beforeSwap(
-        address sender,
-        PoolKey calldata,
-        SwapParams calldata params,
-        bytes calldata hookData
-    ) external override onlyPoolManager returns (bytes4, BeforeSwapDelta, uint24) {
-        // Decode hook data: (commitmentHash, salt, minAmountOut)
-        (bytes32 commitmentHash, uint256 salt, uint256 minAmountOut) = abi.decode(
-            hookData, 
-            (bytes32, uint256, uint256)
-        );
+    function beforeSwap(address sender, PoolKey calldata, SwapParams calldata params, bytes calldata hookData) 
+        external override onlyPoolManager returns (bytes4, BeforeSwapDelta, uint24) 
+    {
+        (bytes32 commitmentHash, uint256 salt, uint256 minAmountOut) = 
+            abi.decode(hookData, (bytes32, uint256, uint256));
         
-        // Use the actual swap amount from params
         uint256 amountIn = params.amountSpecified > 0 
             ? uint256(params.amountSpecified) 
             : uint256(-params.amountSpecified);
         
-        // Verify commitment is valid and can be revealed
-        require(
-            commitStore.canReveal(commitmentHash, amountIn, minAmountOut, salt),
-            "Invalid or premature commitment"
-        );
+        if (!commitStore.canReveal(commitmentHash, amountIn, minAmountOut, salt)) 
+            revert InvalidCommitment();
         
-        // Mark as revealed in CommitStore
         commitStore.reveal(commitmentHash, amountIn, minAmountOut, salt);
+        emit SwapVerified(commitmentHash, amountIn, minAmountOut, sender);
         
-        emit SwapVerified(commitmentHash, amountIn, minAmountOut);
-        
-        // Return the hook selector with no delta modifications (keep original swap amount)
-        // specifiedDelta = 0 means no change to amountSpecified
-        // unspecifiedDelta = 0 means no change to unspecified token
         return (IHooks.beforeSwap.selector, toBeforeSwapDelta(0, 0), 0);
     }
     
-    function afterSwap(
-        address,
-        PoolKey calldata,
-        SwapParams calldata,
-        BalanceDelta,
-        bytes calldata
-    ) external view override onlyPoolManager returns (bytes4, int128) {
+    function afterSwap(address, PoolKey calldata, SwapParams calldata, BalanceDelta, bytes calldata) 
+        external view override onlyPoolManager returns (bytes4, int128) 
+    {
         return (IHooks.afterSwap.selector, 0);
     }
     
-    // Required hooks (no-ops)
     function beforeInitialize(address, PoolKey calldata, uint160) external pure returns (bytes4) {
         return IHooks.beforeInitialize.selector;
     }
