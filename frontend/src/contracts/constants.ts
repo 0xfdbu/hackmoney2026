@@ -40,3 +40,9 @@ export const TICK_SPACINGS: Record<number, number> = {
   3000: 60,
   10000: 200,
 };
+
+// Uniswap v4 sqrt price limits
+// For zeroForOne=true (token0 -> token1): use MIN_SQRT_PRICE + 1
+// For zeroForOne=false (token1 -> token0): use MAX_SQRT_PRICE - 1
+export const MIN_SQRT_PRICE = 4295128739n;
+export const MAX_SQRT_PRICE = 1461446703485210103287273052203988822378723970342n;

@@ -8,7 +8,9 @@ import {
   COMMIT_STORE_ADDRESS,
   TOKENS,
   BATCH_DURATION,
-  ROUTER_ADDRESS
+  ROUTER_ADDRESS,
+  MIN_SQRT_PRICE,
+  MAX_SQRT_PRICE
 } from '../contracts/constants';
 import { Settings, ArrowDown, Info, X, CheckCircle, Clock, Loader2 } from 'lucide-react';
 import TokenSelector from '../components/TokenSelector';
@@ -46,8 +48,8 @@ interface CommitmentInfo {
   salt: bigint;
   amount: bigint;
   minOut: bigint;
-  fromToken: 'ETH' | 'USDC';
-  toToken: 'ETH' | 'USDC';
+  fromToken: 'ETH' | 'USDC' | 'WETH';
+  toToken: 'ETH' | 'USDC' | 'WETH';
 }
 
 // Helper component to verify salt
@@ -70,8 +72,10 @@ function SaltDisplay({ commitmentData, manualSalt, onToggleInput, showInput }: {
     }
   };
 
-  const verification = manualSalt ? verifySalt(manualSalt) : null;
-  const displaySalt = manualSalt || commitmentData.salt.toString();
+  const verification = manualSalt && manualSalt.trim() !== '' ? verifySalt(manualSalt) : null;
+  // ALWAYS show the commitmentData salt, not manualSalt (manualSalt is only for input)
+  const correctSalt = commitmentData.salt.toString();
+  const displaySalt = manualSalt && manualSalt.trim() !== '' ? manualSalt : correctSalt;
   const bgColor = verification?.color === 'green' ? 'bg-green-50 border-green-200' : 
                   verification?.color === 'red' ? 'bg-red-50 border-red-200' : 
                   'bg-pink-50 border-pink-100';
@@ -80,29 +84,41 @@ function SaltDisplay({ commitmentData, manualSalt, onToggleInput, showInput }: {
                     'text-pink-600';
 
   return (
-    <div className={`rounded-2xl p-4 border mb-4 ${bgColor}`}>
-      <div className="flex justify-between items-center mb-2">
-        <span className={`text-xs font-bold uppercase tracking-wider ${textColor}`}>
-          {verification?.message || 'Your Secret Salt'}
+    <div className={`rounded-2xl p-4 border-2 mb-4 ${bgColor}`}>
+      <div className="flex justify-between items-center mb-3">
+        <span className={`text-sm font-bold uppercase tracking-wider ${textColor}`}>
+          🔐 Your Secret Salt (SAVE THIS!)
         </span>
         <button onClick={onToggleInput} className="text-xs text-pink-500 hover:text-pink-700 underline">
           {showInput ? 'Hide Input' : 'Fix Salt'}
         </button>
       </div>
-      <div className="flex items-center justify-between gap-2">
-        <code className="text-gray-800 font-mono text-sm font-semibold truncate flex-1">{displaySalt}</code>
-        <button 
-          onClick={() => navigator.clipboard.writeText(displaySalt)}
-          className="px-3 py-1.5 bg-white hover:bg-gray-50 text-pink-500 rounded-lg text-xs font-semibold shadow-sm"
-        >
-          Copy
-        </button>
+      <div className="bg-white rounded-xl p-3 border border-gray-200 mb-3">
+        <div className="flex items-center justify-between gap-2">
+          <code className="text-gray-800 font-mono text-lg font-bold truncate flex-1">{displaySalt}</code>
+          <button 
+            onClick={() => {
+              // Copy the CORRECT salt from commitmentData, not the display value
+              const saltToCopy = commitmentData.salt.toString();
+              navigator.clipboard.writeText(saltToCopy);
+              console.log('Copied salt to clipboard:', saltToCopy);
+              alert('Correct salt copied! Save it somewhere safe.');
+            }}
+            className="px-4 py-2 bg-pink-500 hover:bg-pink-600 text-white rounded-lg text-sm font-semibold shadow-sm transition-colors"
+          >
+            Copy Correct Salt
+          </button>
+        </div>
       </div>
-      {!manualSalt && (
-        <p className="text-xs text-pink-600 mt-2">
-          ⚠️ Click "Fix Salt" to enter your saved salt if this one is wrong!
-        </p>
-      )}
+      <div className={`text-sm font-medium ${textColor}`}>
+        {verification?.message || (
+          <>
+            ⚠️ <strong>CRITICAL:</strong> Save this salt! You need it to reveal your swap.
+            <br />
+            <span className="text-xs">If you lose it, your funds will be locked forever.</span>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -134,10 +150,11 @@ const ERC20_ABI = [
 export default function Swap() {
   const { address, isConnected } = useAccount();
   
-  const [fromToken, setFromToken] = useState<'ETH' | 'USDC' | 'WETH'>('USDC');
-  const [toToken, setToToken] = useState<'ETH' | 'USDC' | 'WETH'>('ETH');
+  // Default to WETH -> USDC since that direction works better with current pool price
+  const [fromToken, setFromToken] = useState<'ETH' | 'USDC' | 'WETH'>('ETH');
+  const [toToken, setToToken] = useState<'ETH' | 'USDC' | 'WETH'>('USDC');
   const [amount, setAmount] = useState('');
-  const [slippage, setSlippage] = useState('100');
+  const [slippage, setSlippage] = useState('100'); // Default 100% slippage for testing
   const [showSettings, setShowSettings] = useState(false);
   const [showTokenSelector, setShowTokenSelector] = useState<'from' | 'to' | null>(null);
   
@@ -173,20 +190,29 @@ export default function Swap() {
     token: TOKENS.USDC.address as `0x${string}` 
   });
   
-  // Check allowance
+  // Check allowance - use commitmentData.fromToken, not current fromToken state!
   const { data: allowance } = useReadContract({
-    address: fromToken === 'USDC' ? TOKENS.USDC.address as `0x${string}` : TOKENS.WETH.address as `0x${string}`,
+    address: commitStatus === 'committed' && commitmentData
+      ? (commitmentData.fromToken === 'USDC' ? TOKENS.USDC.address : TOKENS.WETH.address) as `0x${string}`
+      : undefined,
     abi: ERC20_ABI,
     functionName: 'allowance',
-    args: address ? [address, ROUTER_ADDRESS] : undefined,
+    args: address && commitmentData ? [address, ROUTER_ADDRESS] : undefined,
     query: {
-      enabled: !!address && commitStatus === 'committed',
+      enabled: !!address && commitStatus === 'committed' && !!commitmentData,
     }
   });
 
   useEffect(() => {
     if (commitStatus === 'committed' && commitmentData && allowance !== undefined) {
-      setNeedsApproval(allowance < commitmentData.amount);
+      const needsApprove = allowance < commitmentData.amount;
+      setNeedsApproval(needsApprove);
+      console.log('Allowance check:', {
+        token: commitmentData.fromToken,
+        allowance: allowance.toString(),
+        amount: commitmentData.amount.toString(),
+        needsApproval: needsApprove
+      });
     }
   }, [allowance, commitmentData, commitStatus]);
 
@@ -250,9 +276,13 @@ export default function Swap() {
   // Load saved commitment on mount
   useEffect(() => {
     const saved = localStorage.getItem('privyflow_commitment');
+    console.log('Loaded from localStorage:', saved);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
+        console.log('Parsed localStorage data:', parsed);
+        console.log('Salt from localStorage:', parsed.salt);
+        console.log('Salt as BigInt:', BigInt(parsed.salt).toString());
         setCommitmentData({
           commitment: parsed.commitment,
           nullifier: parsed.nullifier,
@@ -305,7 +335,15 @@ export default function Swap() {
       const minOut = calculateMinOut();
       const salt = BigInt(Math.floor(Math.random() * 10000000000000000000));
       
-      console.log('Committing with:', { amount: amountIn.toString(), minOut: minOut.toString(), salt: salt.toString() });
+      console.log('');
+      console.log('========================================');
+      console.log('COMMIT PHASE:');
+      console.log('========================================');
+      console.log('Generated salt:', salt.toString());
+      console.log('Salt type:', typeof salt);
+      console.log('Amount:', amountIn.toString());
+      console.log('MinOut:', minOut.toString());
+      console.log('========================================');
       
       const commitment = keccak256(
         encodePacked(['uint256', 'uint256', 'uint256'], [amountIn, minOut, salt])
@@ -338,7 +376,7 @@ export default function Swap() {
       setRevealBlock(targetBlock);
       
       // Save to localStorage
-      localStorage.setItem('privyflow_commitment', JSON.stringify({
+      const storageData = {
         commitment,
         nullifier,
         salt: salt.toString(),
@@ -347,7 +385,9 @@ export default function Swap() {
         fromToken,
         toToken,
         revealBlock: targetBlock,
-      }));
+      };
+      console.log('Saving to localStorage:', storageData);
+      localStorage.setItem('privyflow_commitment', JSON.stringify(storageData));
       
     } catch (error) {
       console.error('Commit error:', error);
@@ -387,8 +427,16 @@ export default function Swap() {
     reset();
     
     try {
-      // Use manual salt if provided
-      const saltToUse = manualSalt ? BigInt(manualSalt) : commitmentData.salt;
+      // Use manual salt if provided and not empty
+      const saltToUse = manualSalt && manualSalt.trim() !== '' 
+        ? BigInt(manualSalt.trim()) 
+        : commitmentData.salt;
+      
+      console.log('Salt selection:');
+      console.log('  manualSalt raw:', JSON.stringify(manualSalt));
+      console.log('  manualSalt trimmed:', manualSalt ? manualSalt.trim() : '(null/empty)');
+      console.log('  Using manual salt?:', !!(manualSalt && manualSalt.trim() !== ''));
+      console.log('  Final saltToUse:', saltToUse.toString());
       
       console.log('Revealing with:', {
         commitment: commitmentData.commitment,
@@ -397,6 +445,9 @@ export default function Swap() {
         amount: commitmentData.amount.toString(),
       });
       
+      // DEBUG: Show what's being hashed
+      console.log('Debug - Encoding:', encodePacked(['uint256', 'uint256', 'uint256'], [commitmentData.amount, commitmentData.minOut, saltToUse]));
+      
       // Verify the commitment matches
       const recomputedCommitment = keccak256(
         encodePacked(['uint256', 'uint256', 'uint256'], [commitmentData.amount, commitmentData.minOut, saltToUse])
@@ -404,12 +455,21 @@ export default function Swap() {
       
       if (recomputedCommitment.toLowerCase() !== commitmentData.commitment.toLowerCase()) {
         console.error('Commitment mismatch!');
-        console.error('Stored:', commitmentData.commitment);
+        console.error('Stored commitment:', commitmentData.commitment);
         console.error('Recomputed:', recomputedCommitment);
+        console.error('Amount used:', commitmentData.amount.toString());
+        console.error('MinOut used:', commitmentData.minOut.toString());
+        console.error('Salt used:', saltToUse.toString());
+        
+        // Show detailed error in modal
+        const errorMsg = manualSalt 
+          ? `Salt mismatch! The salt "${manualSalt}" doesn't match the commitment. Try without manual salt, or verify your saved salt.`
+          : `Commitment verification failed! Stored: ${commitmentData.commitment.slice(0,20)}... Recomputed: ${recomputedCommitment.slice(0,20)}... This can happen if you changed slippage after committing.`;
+        
         setModal(prev => ({ 
           ...prev, 
           status: 'error', 
-          error: 'Salt mismatch! The salt you entered does not match the commitment. Please check your saved salt.' 
+          error: errorMsg
         }));
         setCommitStatus('committed');
         return;
@@ -432,7 +492,30 @@ export default function Swap() {
         [commitmentData.commitment, saltToUse, commitmentData.minOut]
       );
       
-      const sqrtPriceLimitX96 = 0n; // No price limit
+      // FIX: Use proper sqrtPriceLimitX96 based on swap direction
+      // For zeroForOne=true (USDC->WETH): use MIN_SQRT_PRICE + 1 (price goes down)
+      // For zeroForOne=false (WETH->USDC): use MAX_SQRT_PRICE - 1 (price goes up)
+      const sqrtPriceLimitX96 = zeroForOne 
+        ? MIN_SQRT_PRICE + 1n  // MIN_SQRT_PRICE + 1
+        : MAX_SQRT_PRICE - 1n; // MAX_SQRT_PRICE - 1
+      
+      // DEBUG: Log all final params before sending
+      console.log('');
+      console.log('========================================');
+      console.log('FINAL REVEAL PARAMS:');
+      console.log('========================================');
+      console.log('Commitment:', commitmentData.commitment);
+      console.log('Salt being sent:', saltToUse.toString());
+      console.log('Salt from commitmentData:', commitmentData.salt.toString());
+      console.log('Manual salt input:', manualSalt || '(empty)');
+      console.log('Using manual salt:', !!manualSalt);
+      console.log('Amount:', commitmentData.amount.toString());
+      console.log('MinOut:', commitmentData.minOut.toString());
+      console.log('zeroForOne:', zeroForOne);
+      console.log('sqrtPriceLimitX96:', sqrtPriceLimitX96.toString());
+      console.log('Hook data:', hookData);
+      console.log('========================================');
+      console.log('');
       
       writeContract({
         address: ROUTER_ADDRESS,
@@ -560,19 +643,44 @@ export default function Swap() {
                     {modal.type === 'commit' ? 'Commitment Submitted!' : 
                      modal.type === 'approve' ? 'Token Approved!' : 'Swap Revealed!'}
                   </p>
+                  
+                  {/* Show salt after successful commit */}
+                  {modal.type === 'commit' && commitmentData && (
+                    <div className="mt-4 w-full max-w-sm mx-auto">
+                      <div className="bg-red-50 border-2 border-red-200 rounded-xl p-4">
+                        <p className="text-red-600 font-bold text-sm mb-2">🔐 SAVE YOUR SALT!</p>
+                        <code className="block bg-white rounded-lg p-3 font-mono text-sm break-all text-gray-800">
+                          {commitmentData.salt.toString()}
+                        </code>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(commitmentData.salt.toString());
+                            alert('Salt copied!');
+                          }}
+                          className="mt-2 w-full py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm font-semibold"
+                        >
+                          Copy Salt
+                        </button>
+                        <p className="text-red-600 text-xs mt-2">
+                          ⚠️ You need this salt to reveal. Save it now!
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                  
                   {modal.hash && (
                     <a 
                       href={`https://sepolia.etherscan.io/tx/${modal.hash}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-pink-500 hover:text-pink-600 text-sm mt-3 font-medium"
+                      className="text-pink-500 hover:text-pink-600 text-sm mt-3 font-medium block"
                     >
                       View on Etherscan →
                     </a>
                   )}
                   <button 
                     onClick={closeModal}
-                    className="mt-8 px-8 py-3 bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600 text-white rounded-2xl font-semibold shadow-lg shadow-pink-500/25 transition-all"
+                    className="mt-6 px-8 py-3 bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600 text-white rounded-2xl font-semibold shadow-lg shadow-pink-500/25 transition-all"
                   >
                     Close
                   </button>
@@ -625,7 +733,13 @@ export default function Swap() {
               {['50', '100'].map((s) => (
                 <button
                   key={s}
-                  onClick={() => setSlippage(s)}
+                  onClick={() => {
+                        if (commitStatus !== 'idle' && s !== slippage) {
+                          alert('⚠️ Changing slippage will change minOut and break your pending commitment! Reset the swap first if you want to change slippage.');
+                          return;
+                        }
+                        setSlippage(s);
+                      }}
                   className={`flex-1 py-3 rounded-xl font-semibold transition-all ${
                     slippage === s
                       ? 'bg-gradient-to-r from-pink-500 to-rose-500 text-white shadow-lg shadow-pink-500/25' 
@@ -645,7 +759,8 @@ export default function Swap() {
         {/* Info Banner */}
         <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-2xl">
           <p className="text-sm text-blue-800 font-medium">
-            💡 Swap <strong>USDC → ETH</strong> with <strong>100% slippage</strong> for best results.
+            💡 Swap <strong>ETH → USDC</strong> with <strong>100% slippage</strong> for best results. 
+            The pool price is at minimum, so USDC→ETH swaps may fail.
           </p>
         </div>
 

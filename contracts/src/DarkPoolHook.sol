@@ -6,7 +6,7 @@ import {IPoolManager, SwapParams, ModifyLiquidityParams} from "v4-core/interface
 import {IHooks} from "v4-core/interfaces/IHooks.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {BalanceDelta, BalanceDeltaLibrary} from "v4-core/types/BalanceDelta.sol";
-import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol";
+import {BeforeSwapDelta, BeforeSwapDeltaLibrary, toBeforeSwapDelta} from "v4-core/types/BeforeSwapDelta.sol";
 
 interface ICommitStore {
     function canReveal(
@@ -82,7 +82,10 @@ contract DarkPoolHook is IHooks {
         
         emit SwapVerified(commitmentHash, amountIn, minAmountOut);
         
-        return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+        // Return the hook selector with no delta modifications (keep original swap amount)
+        // specifiedDelta = 0 means no change to amountSpecified
+        // unspecifiedDelta = 0 means no change to unspecified token
+        return (IHooks.beforeSwap.selector, toBeforeSwapDelta(0, 0), 0);
     }
     
     function afterSwap(
