@@ -582,7 +582,7 @@ export default function Swap() {
   const buttonState = getButtonState();
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-pink-50 via-white to-blue-50 pt-24 px-4">
+    <div className="min-h-screen px-4">
       {/* Token Selector Modal */}
       <TokenSelector
         isOpen={showTokenSelector === 'from'}
@@ -1009,35 +1009,6 @@ export default function Swap() {
           </div>
         )}
 
-        <div className="mt-6 bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-pink-500/10 rounded-2xl p-6 border border-purple-100">
-          <h3 className="text-gray-800 font-bold mb-4 flex items-center gap-2 text-lg">
-            <span className="w-8 h-8 rounded-full bg-gradient-to-br from-pink-400 to-rose-500 flex items-center justify-center text-white text-sm">?</span>
-            How PrivyFlow Works
-          </h3>
-          <div className="space-y-4">
-            <div className="flex items-start gap-4">
-              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-pink-400 to-rose-500 flex items-center justify-center text-white text-sm font-bold shrink-0">1</div>
-              <div>
-                <div className="text-gray-800 font-semibold">Commit</div>
-                <div className="text-gray-500 text-sm">Hide your swap amount using a cryptographic commitment</div>
-              </div>
-            </div>
-            <div className="flex items-start gap-4">
-              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-400 to-indigo-500 flex items-center justify-center text-white text-sm font-bold shrink-0">2</div>
-              <div>
-                <div className="text-gray-800 font-semibold">Wait</div>
-                <div className="text-gray-500 text-sm">{BATCH_DURATION} block delay prevents MEV frontrunning</div>
-              </div>
-            </div>
-            <div className="flex items-start gap-4">
-              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-green-400 to-emerald-500 flex items-center justify-center text-white text-sm font-bold shrink-0">3</div>
-              <div>
-                <div className="text-gray-800 font-semibold">Approve & Reveal</div>
-                <div className="text-gray-500 text-sm">Approve token, then execute the swap with your secret salt</div>
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   );
