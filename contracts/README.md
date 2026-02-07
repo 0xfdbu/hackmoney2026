@@ -368,6 +368,72 @@ The pool hasn't been initialized. Run the InitPool script first.
 
 ---
 
+## Contract Verification
+
+To verify the contracts on Sepolia Etherscan (make source code visible):
+
+### Prerequisites
+Make sure `ETHERSCAN_API_KEY` is set in your `.env` file.
+
+### Verify Commands
+
+```bash
+cd contracts/
+source .env
+
+# 1. Verify CommitStore (no constructor args)
+forge verify-contract \
+  --chain-id 11155111 \
+  --watch \
+  0xdC81d28a1721fcdE86d79Ce26ba3b0bEf24C116C \
+  CommitStore
+
+# 2. Verify DarkPoolHook (with constructor args)
+forge verify-contract \
+  --chain-id 11155111 \
+  --watch \
+  --constructor-args $(cast abi-encode "constructor(address,address)" 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543 0xdC81d28a1721fcdE86d79Ce26ba3b0bEf24C116C) \
+  0x1846217Bae61BF26612BD8d9a64b970d525B4080 \
+  DarkPoolHook
+
+# 3. Verify SwapRouter (with constructor args)
+forge verify-contract \
+  --chain-id 11155111 \
+  --watch \
+  --constructor-args $(cast abi-encode "constructor(address,address,address)" 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543 0xdC81d28a1721fcdE86d79Ce26ba3b0bEf24C116C 0x1846217Bae61BF26612BD8d9a64b970d525B4080) \
+  0x36b42E07273CD8ECfF1125bF15771AE356F085B1 \
+  SwapRouter
+```
+
+### Constructor Arguments Reference
+
+| Contract | Constructor Args |
+|----------|-----------------|
+| CommitStore | None |
+| DarkPoolHook | `(poolManager, commitStore)` |
+| SwapRouter | `(poolManager, commitStore, hook)` |
+
+### Verification Status
+
+| Contract | Address | Status |
+|----------|---------|--------|
+| CommitStore | `0xdC81d28a1721fcdE86d79Ce26ba3b0bEf24C116C` | ✅ [Verified](https://sepolia.etherscan.io/address/0xdc81d28a1721fcdE86d79ce26ba3b0bef24c116c#code) |
+| DarkPoolHook | `0x1846217Bae61BF26612BD8d9a64b970d525B4080` | ⚠️ See Note Below |
+| SwapRouter | `0x36b42E07273CD8ECfF1125bF15771AE356F085B1` | ✅ [Verified](https://sepolia.etherscan.io/address/0x36b42e07273cd8ecff1125bf15771ae356f085b1#code) |
+
+**Note on DarkPoolHook:** This contract uses Uniswap v4's `BaseHook` which imports external libraries (`v4-core` and `v4-periphery`). For full transparency, the source code is available at:
+- Main file: [`src/DarkPoolHook.sol`](src/DarkPoolHook.sol)
+- Dependencies: `lib/v4-core/` and `lib/v4-periphery/`
+
+To verify manually on Etherscan:
+1. Use `forge flatten src/DarkPoolHook.sol > DarkPoolHook.flat.sol`
+2. Upload the flattened file to Etherscan with:
+   - Compiler: `v0.8.26+commit.8a97fa7a`
+   - Optimization: **Disabled** (default for Foundry standard JSON)
+   - Constructor args: `0x000000000000000000000000e03a1074c86cfedd5c142c4f04f1a1536e203543000000000000000000000000dc81d28a1721fcde86d79ce26ba3b0bef24c116c`
+
+---
+
 ## Resources
 
 - [Uniswap v4 Documentation](https://docs.uniswap.org/contracts/v4/overview)
