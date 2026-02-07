@@ -2,19 +2,101 @@
 pragma solidity ^0.8.26;
 
 import "forge-std/Script.sol";
+import "forge-std/console.sol";
 import {IPoolManager, ModifyLiquidityParams} from "v4-core/interfaces/IPoolManager.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
-import {Currency} from "v4-core/types/Currency.sol";
-import {IHooks} from "v4-core/interfaces/IHooks.sol";
+import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
+import {BalanceDelta, BalanceDeltaLibrary} from "v4-core/types/BalanceDelta.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
-import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
+import {IHooks} from "v4-core/interfaces/IHooks.sol";
 
-/**
- * @title AddLiquidity
- * @notice Add liquidity to the USDC/WETH pool with the DarkPoolHook
- * @dev Run this after InitPool.s.sol to add initial liquidity
- */
-contract AddLiquidity is Script {
+contract SimpleLiquidityAdder {
+    using CurrencyLibrary for Currency;
+    using BalanceDeltaLibrary for BalanceDelta;
+    
+    IPoolManager public immutable manager;
+    
+    constructor(IPoolManager _manager) {
+        manager = _manager;
+    }
+    
+    function addLiquidity(
+        PoolKey calldata key, 
+        int24 tickLower, 
+        int24 tickUpper, 
+        int256 liquidityDelta
+    ) external returns (BalanceDelta) {
+        bytes memory data = abi.encode(key, tickLower, tickUpper, liquidityDelta, msg.sender);
+        bytes memory result = manager.unlock(data);
+        return abi.decode(result, (BalanceDelta));
+    }
+    
+    function unlockCallback(bytes calldata data) external returns (bytes memory) {
+        require(msg.sender == address(manager), "Not manager");
+        (PoolKey memory key, int24 tickLower, int24 tickUpper, int256 liquidityDelta, address sender) = 
+            abi.decode(data, (PoolKey, int24, int24, int256, address));
+        
+        // Modify liquidity
+        (BalanceDelta delta, ) = manager.modifyLiquidity(
+            key, 
+            ModifyLiquidityParams({
+                tickLower: tickLower,
+                tickUpper: tickUpper,
+                liquidityDelta: liquidityDelta,
+                salt: bytes32(0)
+            }), 
+            bytes("")
+        );
+
+        console.log("Delta0:", delta.amount0());
+        console.log("Delta1:", delta.amount1());
+
+        // Extract amounts from delta
+        int128 amount0 = delta.amount0();
+        int128 amount1 = delta.amount1();
+
+        // Settle currency0
+        if (amount0 > 0) {
+            // We owe currency0
+            _settle(key.currency0, sender, uint256(int256(amount0)));
+        } else if (amount0 < 0) {
+            // Pool owes us currency0
+            manager.take(key.currency0, sender, uint256(int256(-amount0)));
+        }
+        
+        // Settle currency1
+        if (amount1 > 0) {
+            // We owe currency1
+            _settle(key.currency1, sender, uint256(int256(amount1)));
+        } else if (amount1 < 0) {
+            // Pool owes us currency1
+            manager.take(key.currency1, sender, uint256(int256(-amount1)));
+        }
+        
+        return abi.encode(delta);
+    }
+    
+    function _settle(Currency currency, address payer, uint256 amount) internal {
+        if (amount == 0) return;
+        
+        if (currency.isAddressZero()) {
+            // Native ETH
+            manager.settle{value: amount}();
+        } else {
+            // ERC20 token - transfer to manager then settle
+            IERC20(Currency.unwrap(currency)).transferFrom(payer, address(manager), amount);
+            
+            // Call settle(Currency) using low-level call
+            (bool success, bytes memory returnData) = address(manager).call(
+                abi.encodeWithSelector(bytes4(keccak256("settle(Currency)")), currency)
+            );
+            
+            require(success, "Settle failed");
+        }
+    }
+}
+
+contract AddLiquidityScript is Script {
     address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
     address constant HOOK = 0x1846217Bae61BF26612BD8d9a64b970d525B4080;
     address constant USDC = 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238;
@@ -22,77 +104,25 @@ contract AddLiquidity is Script {
     
     function run() external {
         uint256 pk = vm.envUint("PRIVATE_KEY");
-        address user = vm.addr(pk);
-        
-        console.log("Adding liquidity to privacy pool...");
-        console.log("User:", user);
-        
         vm.startBroadcast(pk);
         
-        // Amounts to add - adjust these based on your needs
-        uint256 usdcAmount = 10e6;     // 10 USDC
-        uint256 wethAmount = 0.005e18; // 0.005 WETH (~$10 at $2000/ETH)
+        SimpleLiquidityAdder adder = new SimpleLiquidityAdder(IPoolManager(POOL_MANAGER));
         
-        console.log("USDC amount:", usdcAmount);
-        console.log("WETH amount:", wethAmount);
+        // Ensure broad approvals
+        IERC20(USDC).approve(address(adder), type(uint256).max);
+        IERC20(WETH).approve(address(adder), type(uint256).max);
         
-        // Check and wrap ETH if needed
-        uint256 wethBal = IERC20(WETH).balanceOf(user);
-        if (wethBal < wethAmount) {
-            uint256 needed = wethAmount - wethBal;
-            console.log("Wrapping ETH:", needed);
-            (bool success, ) = WETH.call{value: needed}(abi.encodeWithSignature("deposit()"));
-            require(success, "ETH wrap failed");
-        }
-        
-        // Check USDC balance
-        uint256 usdcBal = IERC20(USDC).balanceOf(user);
-        require(usdcBal >= usdcAmount, "Insufficient USDC");
-        
-        // Approve tokens
-        IERC20(USDC).approve(POOL_MANAGER, usdcAmount);
-        IERC20(WETH).approve(POOL_MANAGER, wethAmount);
-        
-        // Build pool key (USDC is currency0 since address < WETH)
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(USDC),
             currency1: Currency.wrap(WETH),
-            fee: 3000,
-            tickSpacing: 60,
+            fee: 500,
+            tickSpacing: 10,
             hooks: IHooks(HOOK)
         });
         
-        // Add liquidity around current price (tick 0 for 1:1 pool)
-        // Tick 0 = price of 1.0, tick spacing is 60
-        // We add liquidity from tick -60 to +60 (around the current price)
-        int24 tickLower = -60;
-        int24 tickUpper = 60;
-        int256 liquidityDelta = 10000000000000; // Adjust based on amounts
+        adder.addLiquidity(key, -100, 100, 1000000000);
         
-        ModifyLiquidityParams memory params = ModifyLiquidityParams({
-            tickLower: tickLower,
-            tickUpper: tickUpper,
-            liquidityDelta: liquidityDelta,
-            salt: bytes32(0)
-        });
-        
-        console.log("Adding liquidity...");
-        console.log("Tick lower:", vm.toString(tickLower));
-        console.log("Tick upper:", vm.toString(tickUpper));
-        
-        try IPoolManager(POOL_MANAGER).modifyLiquidity(key, params, bytes("")) returns (BalanceDelta delta, BalanceDelta) {
-            console.log("Liquidity added!");
-            console.log("USDC used:", uint256(int256(-delta.amount0())));
-            console.log("WETH used:", uint256(int256(-delta.amount1())));
-        } catch Error(string memory r) {
-            console.log("Failed:", r);
-        } catch (bytes memory r) {
-            console.log("Failed with bytes:");
-            console.logBytes(r);
-        }
-        
+        console.log("Liquidity successfully added!");
         vm.stopBroadcast();
     }
-    
-    receive() external payable {}
 }

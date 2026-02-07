@@ -368,6 +368,57 @@ The pool hasn't been initialized. Run the InitPool script first.
 
 ---
 
+## Fix Pool Price Issue (New Pool)
+
+If the pool price has drifted to minimum and swaps return 0, initialize a **new pool** with better parameters:
+
+### 1. Initialize New Pool (0.05% fee tier)
+
+```bash
+forge script script/InitNewPool.s.sol \
+  --rpc-url $SEPOLIA_RPC_URL \
+  --broadcast \
+  -vv
+```
+
+**New Pool Parameters:**
+- **Fee:** 500 (0.05%) - *Different from old pool's 3000 (0.3%)*
+- **Initial Price:** 2000 USDC/ETH
+- **Tick Spacing:** 10
+- **Same Hook:** 0x1846217Bae61BF26612BD8d9a64b970d525B4080
+
+### 2. Add Liquidity to New Pool
+
+```bash
+forge script script/AddLiquidityNewPool.s.sol \
+  --rpc-url $SEPOLIA_RPC_URL \
+  --broadcast \
+  -vv
+```
+
+**Amounts:**
+- 1000 USDC + 0.5 WETH
+- Wide tick range (-60000 to +80000)
+
+### 3. Update Frontend
+
+The frontend has been updated to use the new pool fee (500). Make sure these constants are set:
+
+```typescript
+// frontend/src/contracts/constants.ts
+export const POOL_FEE = 500;
+export const POOL_TICK_SPACING = 10;
+```
+
+### Why a New Pool?
+
+Uniswap v4 pools cannot be re-initialized once created. Since the old pool (0.3% fee, price ~10,838) had drifted to minimum price due to limited liquidity, we create a new pool with:
+- Lower fee (0.05% vs 0.3%) - attracts more liquidity
+- Better initial price (2000 vs 10,838) - closer to market rate
+- More initial liquidity - prevents price drift
+
+---
+
 ## Contract Verification
 
 To verify the contracts on Sepolia Etherscan (make source code visible):

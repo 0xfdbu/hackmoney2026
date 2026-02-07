@@ -18,7 +18,9 @@ import {
   POOL_MANAGER_ADDRESS,
   TOKENS,
   HOOK_ADDRESS,
-  ROUTER_ADDRESS
+  ROUTER_ADDRESS,
+  POOL_FEE,
+  POOL_TICK_SPACING
 } from '../contracts/constants';
 
 // ABI for PoolManager initialize
@@ -111,7 +113,7 @@ export default function ManageLiquidity() {
   const [activeTab, setActiveTab] = useState<'initialize' | 'addLiquidity'>('initialize');
   
   // Initialize pool state
-  const [feeTier, setFeeTier] = useState(3000);
+  const [feeTier, setFeeTier] = useState(POOL_FEE); // 500 = 0.05% (new pool)
   const [initialPrice, setInitialPrice] = useState('1');
   const [isPoolInitialized, setIsPoolInitialized] = useState(false);
   
