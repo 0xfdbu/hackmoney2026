@@ -311,7 +311,9 @@ export default function Swap() {
 
   const calculateOutput = useCallback(() => {
     if (!amount || parseFloat(amount) <= 0) return '';
-    const rate = fromToken === 'ETH' ? 2000 : 0.0005;
+    // Pool initialized at ~10,838 USDC/ETH, but price has drifted due to swaps
+    // Current pool price may vary significantly from this
+    const rate = fromToken === 'ETH' || fromToken === 'WETH' ? 10838 : 0.000092;
     return (parseFloat(amount) * rate).toFixed(6);
   }, [amount, fromToken]);
 
@@ -760,7 +762,7 @@ export default function Swap() {
         <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-2xl">
           <p className="text-sm text-blue-800 font-medium">
             💡 Swap <strong>ETH → USDC</strong> with <strong>100% slippage</strong> for best results. 
-            The pool price is at minimum, so USDC→ETH swaps may fail.
+            Pool initialized at 10,838 USDC/ETH but price has drifted to minimum. USDC→ETH swaps may fail.
           </p>
         </div>
 
@@ -857,7 +859,7 @@ export default function Swap() {
           <div className="flex justify-between items-center mt-4 mx-2 mb-2">
             <div className="flex items-center gap-2 text-sm text-gray-500">
               <Info className="w-4 h-4" />
-              <span>Rate: 1 {fromToken} ≈ {fromToken === 'ETH' ? '2,000' : '0.0005'} {toToken}</span>
+              <span>Rate: 1 {getDisplaySymbol(fromToken)} ≈ {fromToken === 'ETH' || fromToken === 'WETH' ? '10,838' : '0.000092'} {getDisplaySymbol(toToken)}</span>
             </div>
             <span className="text-sm font-semibold text-pink-600">Slippage: {slippage}%</span>
           </div>

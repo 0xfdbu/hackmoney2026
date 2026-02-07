@@ -10,8 +10,8 @@ import {
   BookOpen, 
   ArrowLeftRight, 
   Droplets, 
-  Compass,
-  LayoutGrid
+  Github,
+  History
 } from 'lucide-react';
 
 export default function Header() {
@@ -30,8 +30,8 @@ export default function Header() {
 
   const navItems = [
     { path: '/', label: 'Swap', icon: ArrowLeftRight },
-    { path: '/pool', label: 'Pool', icon: Droplets },
-    { path: '/explore', label: 'Explore', icon: Compass },
+    { path: '/liquidity', label: 'Pool', icon: Droplets },
+    { path: '/history', label: 'History', icon: History },
     { path: '/docs', label: 'Docs', icon: BookOpen },
   ];
 
@@ -69,6 +69,16 @@ export default function Header() {
               </a>
             );
           })}
+          {/* GitHub Link - Desktop */}
+          <a
+            href="https://github.com/0xfdbu/hackmoney2026"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-gray-500 hover:text-gray-800 font-medium hover:bg-white/50 transition-all"
+          >
+            <Github className="w-4 h-4" />
+            <span>GitHub</span>
+          </a>
         </nav>
         
         {/* Mobile Menu Button */}
@@ -136,6 +146,20 @@ export default function Header() {
                 </a>
               );
             })}
+            
+            {/* GitHub Link - Mobile */}
+            <a
+              href="https://github.com/0xfdbu/hackmoney2026"
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => setMobileMenuOpen(false)}
+              className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-600 font-medium hover:bg-gray-50 transition-colors"
+            >
+              <div className="w-10 h-10 rounded-xl bg-gray-100 flex items-center justify-center">
+                <Github className="w-5 h-5 text-gray-500" />
+              </div>
+              GitHub
+            </a>
             
             {/* Mobile Wallet Button */}
             <div className="border-t border-gray-100 pt-4 mt-2">

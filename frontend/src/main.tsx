@@ -35,7 +35,7 @@ import Layout from './components/Layout';
 import Home from './pages/Home';
 import Swap from './pages/Swap';
 import ManageLiquidity from './pages/ManageLiquidity';
-import Explore from './pages/Explore';
+import History from './pages/History';
 import Portfolio from './pages/Portfolio';
 import Documentation from './pages/Documentation';
 
@@ -85,8 +85,8 @@ const router = createBrowserRouter([
       { index: true, element: <Home /> },
       { path: 'swap', element: <Swap /> },
       { path: 'liquidity', element: <ManageLiquidity /> },
-      { path: 'explore', element: <Explore /> },
       { path: 'portfolio', element: <Portfolio /> },
+      { path: 'history', element: <History /> },
       { path: 'docs', element: <Documentation /> },
     ],
   },

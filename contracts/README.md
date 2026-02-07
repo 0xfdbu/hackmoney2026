@@ -1,183 +1,379 @@
-# Uniswap v4 Hook Template
+# PrivyFlow - Dark Pool DEX
 
-**A template for writing Uniswap v4 Hooks 🦄**
+**Privacy-preserving Uniswap v4 Hook for MEV-resistant trading 🔒**
 
-### Get Started
+PrivyFlow is a dark pool DEX built on Uniswap v4 that uses a commit-reveal scheme to hide trade amounts until execution, with a 10-block delay to prevent MEV and front-running attacks.
 
-This template provides a starting point for writing Uniswap v4 Hooks, including a simple example and preconfigured test environment. Start by creating a new repository using the "Use this template" button at the top right of this page. Alternatively you can also click this link:
+## Architecture Overview
 
-[![Use this Template](https://img.shields.io/badge/Use%20this%20Template-101010?style=for-the-badge&logo=github)](https://github.com/uniswapfoundation/v4-template/generate)
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              PRIVYFLOW ARCHITECTURE                          │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-1. The example hook [Counter.sol](src/Counter.sol) demonstrates the `beforeSwap()` and `afterSwap()` hooks
-2. The test template [Counter.t.sol](test/Counter.t.sol) preconfigures the v4 pool manager, test tokens, and test liquidity.
+    User
+      │
+      ▼
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────────┐
+│   Frontend      │────▶│  CommitStore     │     │   Uniswap v4            │
+│  (React/Wagmi)  │     │  (Commitments)   │     │   PoolManager           │
+└─────────────────┘     └──────────────────┘     └─────────────────────────┘
+       │                         │                          ▲
+       │                         │                          │
+       ▼                         ▼                          │
+┌──────────────────────────────────────────────────┐      │
+│              DarkPoolHook (Uniswap v4 Hook)       │──────┘
+│  ┌─────────────────────────────────────────────┐  │
+│  │ • beforeSwap(): Verify commitment           │  │
+│  │ • afterSwap():  Clean up state              │  │
+│  │ • Commit-reveal logic enforcement           │  │
+│  └─────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────┘
+       │
+       ▼
+┌─────────────────┐
+│  SwapRouter     │
+│  (Settlement)   │
+└─────────────────┘
+```
 
-<details>
-<summary>Updating to v4-template:latest</summary>
+## Flow Diagram
 
-This template is actively maintained -- you can update the v4 dependencies, scripts, and helpers:
+```
+PHASE 1: COMMIT                    PHASE 2: WAIT                    PHASE 3: REVEAL
+┌─────────────────┐                ┌─────────────────┐              ┌─────────────────┐
+│ 1. User enters  │                │                 │              │ 1. After 10     │
+│    swap amount  │                │  10 blocks      │              │    blocks       │
+│                 │                │  (~2 minutes)   │              │                 │
+│ 2. Generate     │                │                 │              │ 2. Approve      │
+│    random salt  │────────────────▶                 │─────────────▶│    tokens       │
+│                 │                │ Pool price      │              │                 │
+│ 3. Compute      │                │ may change      │              │ 3. Reveal salt  │
+│    commitment   │                │                 │              │    + commitment │
+│    hash         │                │ MEV bots        │              │                 │
+│                 │                │ cannot see      │              │ 4. Hook verifies│
+│ 4. Submit to    │                │ amounts!        │              │    & executes   │
+│    CommitStore  │                │                 │              │    swap         │
+└─────────────────┘                └─────────────────┘              └─────────────────┘
+```
+
+## Contract Addresses (Sepolia Testnet)
+
+| Contract | Address | Description |
+|----------|---------|-------------|
+| **CommitStore** | `0xdC81d28a1721fcdE86d79Ce26ba3b0bEf24C116C` | Stores commitments with 10-block delay |
+| **DarkPoolHook** | `0x1846217Bae61BF26612BD8d9a64b970d525B4080` | Uniswap v4 hook for verification |
+| **SwapRouter** | `0x36b42E07273CD8ECfF1125bF15771AE356F085B1` | Handles swap routing and settlement |
+| **PoolManager** | `0xE03A1074c86CFeDd5C142C4F04F1a1536e203543` | Uniswap v4 PoolManager (Sepolia) |
+| **USDC** | `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` | Test USDC token |
+| **WETH** | `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14` | Wrapped ETH token |
+
+## Prerequisites
 
 ```bash
-git remote add template https://github.com/uniswapfoundation/v4-template
-git fetch template
-git merge template/main <BRANCH> --allow-unrelated-histories
-```
-
-</details>
-
-### Requirements
-
-This template is designed to work with Foundry (stable). If you are using Foundry Nightly, you may encounter compatibility issues. You can update your Foundry installation to the latest stable version by running:
-
-```
+# Install Foundry
+curl -L https://foundry.paradigm.xyz | bash
 foundryup
-```
 
-To set up the project, run the following commands in your terminal to install dependencies and run the tests:
-
-```
+# Install dependencies
 forge install
-forge test
 ```
 
-### Local Development
+## Environment Setup
 
-Other than writing unit tests (recommended!), you can only deploy & test hooks on [anvil](https://book.getfoundry.sh/anvil/) locally. Scripts are available in the `script/` directory, which can be used to deploy hooks, create pools, provide liquidity and swap tokens. The scripts support both local `anvil` environment as well as running them directly on a production network.
-
-### Executing locally with using **Anvil**:
-
-1. Start Anvil (or fork a specific chain using anvil):
+Create a `.env` file:
 
 ```bash
-anvil
+SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
+PRIVATE_KEY=0x...  # Your private key (with 0x prefix)
+ETHERSCAN_API_KEY=...  # For contract verification (optional)
 ```
 
-or
-
+Load the environment:
 ```bash
-anvil --fork-url <YOUR_RPC_URL>
+source .env
 ```
 
-2. Execute scripts:
+---
+
+## Step-by-Step Operations
+
+### 1. Initialize Pool
+
+Before you can add liquidity or swap, you need to initialize the pool with the hook.
+
+**Diagram:**
+```
+Initialize Pool
+     │
+     ▼
+┌────────────────────────────────────────┐
+│  PoolKey:                              │
+│  • currency0: USDC                     │
+│  • currency1: WETH                     │
+│  • fee: 3000 (0.3%)                    │
+│  • tickSpacing: 60                     │
+│  • hooks: DarkPoolHook                 │
+└────────────────────────────────────────┘
+     │
+     ▼
+┌────────────────────────────────────────┐
+│  Initial sqrtPrice: 79228162514...     │
+│  (corresponds to initial price ratio)  │
+└────────────────────────────────────────┘
+```
+
+**Script:**
+```bash
+forge script script/InitPool.s.sol \
+    --rpc-url $SEPOLIA_RPC_URL \
+    --broadcast \
+    -vv
+```
+
+**Reference:** [InitPool.s.sol](script/InitPool.s.sol)
+
+**Key Parameters:**
+- `currency0`: USDC address
+- `currency1`: WETH address  
+- `fee`: 3000 (0.3% tier)
+- `tickSpacing`: 60 (for 0.3% fee tier)
+- `hooks`: DarkPoolHook address
+- `sqrtPriceX96`: Initial price (79228162514... for 1:1 approximately)
+
+---
+
+### 2. Add Liquidity
+
+Provide liquidity to the pool so swaps can execute.
+
+**Diagram:**
+```
+Add Liquidity
+     │
+     ▼
+┌────────────────────────────────────────┐
+│  1. Approve tokens for PositionManager │
+│     • USDC approval                    │
+│     • WETH approval                    │
+└────────────────────────────────────────┘
+     │
+     ▼
+┌────────────────────────────────────────┐
+│  2. Mint LP Position                   │
+│     • tickLower: -60000                │
+│     • tickUpper: 60000                 │
+│     • amount0Desired: 1000000 USDC     │
+│     • amount1Desired: 1 WETH           │
+└────────────────────────────────────────┘
+     │
+     ▼
+┌────────────────────────────────────────┐
+│  3. Receive LP NFT/Position            │
+└────────────────────────────────────────┘
+```
+
+**Script:**
+```bash
+forge script script/AddLiquidity.s.sol \
+    --rpc-url $SEPOLIA_RPC_URL \
+    --broadcast \
+    -vv
+```
+
+**Reference:** [AddLiquidity.s.sol](script/AddLiquidity.s.sol)
+
+**Amount Calculation:**
+```solidity
+// Example: Provide 10 USDC + 0.01 WETH
+uint256 usdcAmount = 10 * 10**6;  // USDC has 6 decimals
+uint256 wethAmount = 0.01 ether;  // WETH has 18 decimals
+```
+
+---
+
+### 3. Execute Swap (Commit-Reveal)
+
+The core PrivyFlow experience - a privacy-preserving swap using commit-reveal.
+
+**Complete Flow Diagram:**
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         COMMIT-REVEAL SWAP FLOW                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+PHASE 1: COMMIT (Block N)
+┌────────────────────────────────────────┐
+│ 1. User inputs:                        │
+│    • Amount: 1 USDC (1,000,000)        │
+│    • Min output: 0 (100% slippage)     │
+│                                        │
+│ 2. Frontend generates salt:            │
+│    salt = random(0, 2^256)             │
+│                                        │
+│ 3. Compute commitment:                 │
+│    commitment = keccak256(             │
+│      amount, minOut, salt              │
+│    )                                   │
+│                                        │
+│ 4. Submit to CommitStore:              │
+│    commit(commitment, nullifier)       │
+│                                        │
+│    Store: salt locally!                │
+└────────────────────────────────────────┘
+              │
+              │ 10 blocks (~2 minutes)
+              ▼
+PHASE 2: WAIT (Blocks N+1 to N+9)
+┌────────────────────────────────────────┐
+│ • Commitment stored on-chain           │
+│ • Block number recorded                │
+│ • MEV bots cannot see amount           │
+│ • Pool price may fluctuate             │
+└────────────────────────────────────────┘
+              │
+              ▼
+PHASE 3: REVEAL (Block N+10)
+┌────────────────────────────────────────┐
+│ 1. Approve token spend:                │
+│    approve(router, amount)             │
+│                                        │
+│ 2. Build swap params:                  │
+│    • zeroForOne: true/false            │
+│    • amountSpecified: committed amt    │
+│    • sqrtPriceLimitX96: min/max        │
+│                                        │
+│ 3. Build hook data:                    │
+│    (commitment, salt, minOut)          │
+│                                        │
+│ 4. Execute swap through router         │
+│                                        │
+│ 5. DarkPoolHook verifies:              │
+│    • Commitment exists                 │
+│    • 10 blocks passed                  │
+│    • Salt matches commitment           │
+│    • Not already revealed              │
+│                                        │
+│ 6. Uniswap v4 executes swap            │
+│                                        │
+│ 7. User receives output tokens         │
+└────────────────────────────────────────┘
+```
+
+**Using Foundry Script:**
+
+The [ExecuteSwap.s.sol](script/ExecuteSwap.s.sol) script handles both commit and reveal phases:
 
 ```bash
-forge script script/00_DeployHook.s.sol \
-    --rpc-url http://localhost:8545 \
-    --private-key <PRIVATE_KEY> \
+# First run - COMMIT
+forge script script/ExecuteSwap.s.sol \
+    --rpc-url $SEPOLIA_RPC_URL \
+    --broadcast \
+    -vv
+
+# Save the printed salt!
+
+# Wait 10 blocks (~2 minutes)
+
+# Update SALT constant in script with saved value
+
+# Second run - REVEAL
+forge script script/ExecuteSwap.s.sol \
+    --rpc-url $SEPOLIA_RPC_URL \
+    --broadcast \
+    -vv
+```
+
+**Manual Steps:**
+
+1. **Commit:**
+```bash
+forge script script/Commit.s.sol \
+    --rpc-url $SEPOLIA_RPC_URL \
     --broadcast
 ```
 
-### Using **RPC URLs** (actual transactions):
-
-:::info
-It is best to not store your private key even in .env or enter it directly in the command line. Instead use the `--account` flag to select your private key from your keystore.
-:::
-
-### Follow these steps if you have not stored your private key in the keystore:
-
-<details>
-
-1. Add your private key to the keystore:
-
+2. **Wait 10 blocks:**
 ```bash
-cast wallet import <SET_A_NAME_FOR_KEY> --interactive
+# Check current block
+cast block-number --rpc-url $SEPOLIA_RPC_URL
+
+# Wait for target block
 ```
 
-2. You will prompted to enter your private key and set a password, fill and press enter:
-
-```
-Enter private key: <YOUR_PRIVATE_KEY>
-Enter keystore password: <SET_NEW_PASSWORD>
-```
-
-You should see this:
-
-```
-`<YOUR_WALLET_PRIVATE_KEY_NAME>` keystore was saved successfully. Address: <YOUR_WALLET_ADDRESS>
-```
-
-::: warning
-Use `history -c` to clear your command history.
-:::
-
-</details>
-
-1. Execute scripts:
-
+3. **Reveal & Swap:**
 ```bash
-forge script script/00_DeployHook.s.sol \
-    --rpc-url <YOUR_RPC_URL> \
-    --account <YOUR_WALLET_PRIVATE_KEY_NAME> \
-    --sender <YOUR_WALLET_ADDRESS> \
+forge script script/TestSwap.s.sol \
+    --rpc-url $SEPOLIA_RPC_URL \
     --broadcast
 ```
 
-You will prompted to enter your wallet password, fill and press enter:
+---
 
-```
-Enter keystore password: <YOUR_PASSWORD>
-```
+## Key Parameters Reference
 
-### Key Modifications to note:
+### Sqrt Price Limits
 
-1. Update the `token0` and `token1` addresses in the `BaseScript.sol` file to match the tokens you want to use in the network of your choice for sepolia and mainnet deployments.
-2. Update the `token0Amount` and `token1Amount` in the `CreatePoolAndAddLiquidity.s.sol` file to match the amount of tokens you want to provide liquidity with.
-3. Update the `token0Amount` and `token1Amount` in the `AddLiquidity.s.sol` file to match the amount of tokens you want to provide liquidity with.
-4. Update the `amountIn` and `amountOutMin` in the `Swap.s.sol` file to match the amount of tokens you want to swap.
+For swap price limits, use these constants:
 
-### Verifying the hook contract
-
-```bash
-forge verify-contract \
-  --rpc-url <URL> \
-  --chain <CHAIN_NAME_OR_ID> \
-  # Generally etherscan
-  --verifier <Verification_Provider> \
-  # Use --etherscan-api-key <ETHERSCAN_API_KEY> if you are using etherscan
-  --verifier-api-key <Verification_Provider_API_KEY> \
-  --constructor-args <ABI_ENCODED_ARGS> \
-  --num-of-optimizations <OPTIMIZER_RUNS> \
-  <Contract_Address> \
-  <path/to/Contract.sol:ContractName>
-  --watch
+```solidity
+uint160 constant MIN_SQRT_PRICE = 4295128739;
+uint160 constant MAX_SQRT_PRICE = 1461446703485210103287273052203988822378723970342;
 ```
 
-### Troubleshooting
+**Direction Rules:**
+- **USDC → WETH** (zeroForOne = true): Use `MIN_SQRT_PRICE + 1`
+- **WETH → USDC** (zeroForOne = false): Use `MAX_SQRT_PRICE - 1`
 
-<details>
+### Commitment Hash
 
-#### Permission Denied
-
-When installing dependencies with `forge install`, Github may throw a `Permission Denied` error
-
-Typically caused by missing Github SSH keys, and can be resolved by following the steps [here](https://docs.github.com/en/github/authenticating-to-github/connecting-to-github-with-ssh)
-
-Or [adding the keys to your ssh-agent](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent#adding-your-ssh-key-to-the-ssh-agent), if you have already uploaded SSH keys
-
-#### Anvil fork test failures
-
-Some versions of Foundry may limit contract code size to ~25kb, which could prevent local tests to fail. You can resolve this by setting the `code-size-limit` flag
-
-```
-anvil --code-size-limit 40000
+```solidity
+bytes32 commitment = keccak256(abi.encodePacked(
+    amountIn,    // uint256: Input amount
+    minOut,      // uint256: Minimum output (0 for 100% slippage)
+    salt         // uint256: Random secret number
+));
 ```
 
-#### Hook deployment failures
+### Nullifier
 
-Hook deployment failures are caused by incorrect flags or incorrect salt mining
+```solidity
+bytes32 nullifier = keccak256(abi.encodePacked(salt));
+```
 
-1. Verify the flags are in agreement:
-   - `getHookCalls()` returns the correct flags
-   - `flags` provided to `HookMiner.find(...)`
-2. Verify salt mining is correct:
-   - In **forge test**: the _deployer_ for: `new Hook{salt: salt}(...)` and `HookMiner.find(deployer, ...)` are the same. This will be `address(this)`. If using `vm.prank`, the deployer will be the pranking address
-   - In **forge script**: the deployer must be the CREATE2 Proxy: `0x4e59b44847b379578588920cA78FbF26c0B4956C`
-     - If anvil does not have the CREATE2 deployer, your foundry may be out of date. You can update it with `foundryup`
+---
 
-</details>
+## Troubleshooting
 
-### Additional Resources
+### PriceLimitAlreadyExceeded
+The pool price is at the limit for your swap direction. Try swapping in the opposite direction or wait for price to move.
 
-- [Uniswap v4 docs](https://docs.uniswap.org/contracts/v4/overview)
-- [v4-periphery](https://github.com/uniswap/v4-periphery)
-- [v4-core](https://github.com/uniswap/v4-core)
-- [v4-by-example](https://v4-by-example.org)
+### SwapAmountCannotBeZero
+You're using `sqrtPriceLimitX96 = 0` which is invalid. Use `MIN_SQRT_PRICE + 1` or `MAX_SQRT_PRICE - 1`.
+
+### CommitmentMismatch
+The salt doesn't match the commitment. Make sure you're using the exact same salt, amount, and minOut from the commit phase.
+
+### PoolNotInitialized
+The pool hasn't been initialized. Run the InitPool script first.
+
+---
+
+## Successful Transactions (Sepolia)
+
+| Type | Transaction Hash | Block |
+|------|-----------------|-------|
+| Swap (USDC→WETH) | `0xff4614e281d34e2a852b79eac661273aebbcfcdf93d7d897ae30a7289141ce27` | 10207029 |
+| Swap (WETH→USDC) | `0x2c7bfdd28112c76c5ed34c3894b9f2d79d5a2bfa96b18f1c1c1e78176ff554c0` | - |
+
+---
+
+## Resources
+
+- [Uniswap v4 Documentation](https://docs.uniswap.org/contracts/v4/overview)
+- [Foundry Book](https://book.getfoundry.sh/)
+- [Sepolia Testnet Explorer](https://sepolia.etherscan.io/)
+
+## License
+
+MIT
