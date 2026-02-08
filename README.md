@@ -1,8 +1,8 @@
-
 # PrivyFlow 🔒 - Privacy-Preserving DEX on Uniswap v4
 
 PrivyFlow is a dark pool DEX built on Uniswap v4 hooks that enables privacy-preserving swaps using a commit-reveal scheme. Users commit to trades without revealing amounts, then execute after a 10-block delay to prevent MEV and front-running.
 
+![PrivyFlow Interface](images/1.png)
 
 ## 🎯 Problem Statement
 
@@ -99,13 +99,13 @@ Handles the unlock/settlement pattern for Uniswap v4.
 ### Prerequisites
 - Node.js 18+
 - MetaMask or Web3 wallet
-- Sepolia ETH (from [faucet](https://sepoliafaucet.com/))
+- Sepolia ETH (from [faucet](https://sepoliafaucet.com/ ))
 
 ### Installation
 
 ```bash
 # Clone repo
-git clone https://github.com/0xfdbu/hackmoney2026.git
+git clone https://github.com/0xfdbu/hackmoney2026.git 
 cd privyflow
 
 # Install dependencies
@@ -175,7 +175,24 @@ npm run dev
 
 ## 🧪 Live Transactions
 
-### Successful Dark Pool Swap
+### Example Flow (10 USDC → ETH)
+
+**Step 1: Commit**
+![Commit Transaction](images/1.png)
+- **Tx**: `0x2ce4de59918e7c8de318e0bc5cc61d61f575fd412bf137ded923e5f926044cfb`
+- Submit commitment hash to store
+
+**Step 2: Approve**
+![Approve Transaction](images/2.png)
+- **Tx**: `0x142fbbedb64dd710f264bc521edb7c70302e16a5a002a0f95625add2899c119c`
+- Approve token spend for reveal
+
+**Step 3: Swap Success**
+![Swap Success](images/3.png)
+- **Tx**: `0xd8c5eec284672a129f50cf92dfc0bd6bb8a35f93d9159b47ac3f9ac3656bcb0c`
+- Swap executed through DarkPoolHook
+
+### Successful Dark Pool Swap Details
 **Tx Hash**: `0xce5347734c3aae046cec3b6a464e1a16698ff7e65f8265bebf61e2417f4859c9`
 
 - **Input**: 10 USDC
