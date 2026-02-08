@@ -222,7 +222,7 @@ npm run dev
 
 MIT License - see LICENSE file
 
-## 🙏 Acknowledgments
+## 🚀  Acknowledgments
 
 - Uniswap Labs for v4 hooks architecture
 - Foundry team for testing framework
