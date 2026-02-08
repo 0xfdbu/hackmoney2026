@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useBalance, useReadContract } from 'wagmi';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
-import { parseUnits, formatUnits, keccak256, encodeAbiParameters } from 'viem'; // Add keccak256 and encodeAbiParameters
+import { parseUnits, formatUnits, keccak256, encodeAbiParameters } from 'viem';
 import { 
   Plus, 
   Droplets, 
@@ -16,7 +16,9 @@ import {
   Check,
   Wallet,
   ArrowRight,
-  Search
+  Search,
+  ChevronDown,
+  ArrowUpDown
 } from 'lucide-react';
 import { 
   POOL_MANAGER_ADDRESS,
@@ -108,20 +110,22 @@ const PERMIT2_ABI = [
   }
 ] as const;
 
-const TOKEN_INFO: Record<string, { symbol: string; name: string; icon: string; decimals: number }> = {
-  ETH: {
+const TOKEN_LIST = [
+  {
     symbol: 'ETH',
     name: 'Ethereum',
+    address: '0x0000000000000000000000000000000000000000',
     icon: 'https://cryptologos.cc/logos/ethereum-eth-logo.png',
     decimals: 18,
   },
-  USDC: {
+  {
     symbol: 'USDC',
     name: 'USD Coin',
+    address: TOKENS.USDC.address,
     icon: 'https://cryptologos.cc/logos/usd-coin-usdc-logo.png',
     decimals: 6,
   },
-};
+];
 
 const FEE_TIERS = [
   { fee: 100, label: '0.01%', description: 'Stable pairs', ticks: 1 },
@@ -130,14 +134,14 @@ const FEE_TIERS = [
   { fee: 10000, label: '1%', description: 'Exotic pairs', ticks: 200 },
 ];
 
-// Helper to convert sqrtPriceX96 to price
-const sqrtPriceX96ToPrice = (sqrtPriceX96: bigint): number => {
+const sqrtPriceX96ToPrice = (sqrtPriceX96: bigint, token0Decimals: number, token1Decimals: number): number => {
   const Q96 = 2n ** 96n;
   const price = Number(sqrtPriceX96) / Number(Q96);
-  return price * price;
+  const rawPrice = price * price;
+  const decimalAdjustment = 10 ** (token0Decimals - token1Decimals);
+  return rawPrice * decimalAdjustment;
 };
 
-// Helper to convert price to tick
 const priceToTick = (price: number): number => {
   return Math.floor(Math.log(price) / Math.log(1.0001));
 };
@@ -145,26 +149,27 @@ const priceToTick = (price: number): number => {
 export default function ManageLiquidity() {
   const { address, isConnected } = useAccount();
   
-  // Flow state: 'select-fee' -> 'check' -> 'initialize' -> 'range' -> 'deposit'
-  const [step, setStep] = useState<'select-fee' | 'check' | 'initialize' | 'range' | 'deposit'>('select-fee');
+  const [step, setStep] = useState<'select-pair' | 'check' | 'initialize' | 'range' | 'deposit'>('select-pair');
+  
+  const [token0, setToken0] = useState(TOKEN_LIST[0]);
+  const [token1, setToken1] = useState(TOKEN_LIST[1]);
   const [selectedFee, setSelectedFee] = useState<number | null>(null);
   const [selectedTickSpacing, setSelectedTickSpacing] = useState(10);
+  
   const [poolExists, setPoolExists] = useState(false);
   const [currentPrice, setCurrentPrice] = useState<number>(0);
   const [currentTick, setCurrentTick] = useState<number>(0);
   
-  // Price range state
   const [minPrice, setMinPrice] = useState('');
   const [maxPrice, setMaxPrice] = useState('');
   const [tickLower, setTickLower] = useState<number>(0);
   const [tickUpper, setTickUpper] = useState<number>(0);
   const [fullRange, setFullRange] = useState(false);
   
-  // Deposit amounts
-  const [usdcAmount, setUsdcAmount] = useState('100');
-  const [ethAmount, setEthAmount] = useState('0.05');
+  const [amount0, setAmount0] = useState('');
+  const [amount1, setAmount1] = useState('');
   
-  // UI state
+  const [showTokenSelector, setShowTokenSelector] = useState<'token0' | 'token1' | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
   const [txStatus, setTxStatus] = useState<'idle' | 'checking' | 'initializing' | 'approving' | 'pending' | 'success' | 'error'>('idle');
@@ -174,23 +179,31 @@ export default function ManageLiquidity() {
   const { writeContract, isPending } = useWriteContract();
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash: txHash });
 
-  const { data: ethBalance } = useBalance({ address });
-  const { data: usdcBalance } = useBalance({
+  const { data: balance0 } = useBalance({ 
     address,
-    token: TOKENS.USDC.address as `0x${string}`
+    token: token0.address === '0x0000000000000000000000000000000000000000' ? undefined : token0.address as `0x${string}`
+  });
+  
+  const { data: balance1 } = useBalance({ 
+    address,
+    token: token1.address === '0x0000000000000000000000000000000000000000' ? undefined : token1.address as `0x${string}`
   });
 
-  // Calculate pool ID using viem
   const getPoolId = (fee: number, tickSpacing: number): `0x${string}` => {
+    const addr0 = token0.address.toLowerCase();
+    const addr1 = token1.address.toLowerCase();
+    
+    let currency0 = addr0 < addr1 ? token0.address : token1.address;
+    let currency1 = addr0 < addr1 ? token1.address : token0.address;
+
     const poolKey = {
-      currency0: TOKENS.ETH.address,
-      currency1: TOKENS.USDC.address,
+      currency0,
+      currency1,
       fee: fee,
       tickSpacing: tickSpacing,
       hooks: HOOK_ADDRESS,
     };
 
-    // Encode the pool key tuple: (address, address, uint24, int24, address)
     const encoded = encodeAbiParameters(
       [
         { type: 'address', name: 'currency0' },
@@ -205,47 +218,56 @@ export default function ManageLiquidity() {
     return keccak256(encoded);
   };
 
-  // Check if pool exists
-  const { data: slot0, refetch: refetchPool } = useReadContract({
+  const { 
+    data: slot0, 
+    refetch: refetchPool,
+    isLoading: isCheckingPool,
+    isError: isPoolCheckError,
+  } = useReadContract({
     address: POOL_MANAGER_ADDRESS as `0x${string}`,
     abi: POOL_MANAGER_ABI,
     functionName: 'getSlot0',
-    args: selectedFee !== null && selectedTickSpacing !== null ? [getPoolId(selectedFee, selectedTickSpacing)] : undefined,
+    args: selectedFee !== null ? [getPoolId(selectedFee, selectedTickSpacing)] : undefined,
     query: {
       enabled: step === 'check' && selectedFee !== null,
+      retry: false,
     }
   });
 
   useEffect(() => {
-    if (step === 'check' && slot0 !== undefined) {
-      if (slot0[0] !== 0n) {
-        setPoolExists(true);
-        const price = sqrtPriceX96ToPrice(slot0[0]);
-        setCurrentPrice(price);
-        setCurrentTick(Number(slot0[1]));
-        
-        // Set default range around current price (+/- 10%)
-        const defaultMin = (price * 0.9).toFixed(6);
-        const defaultMax = (price * 1.1).toFixed(6);
-        setMinPrice(defaultMin);
-        setMaxPrice(defaultMax);
-        updateTicks(defaultMin, defaultMax, false);
-        
-        setStep('range');
-      } else {
-        setPoolExists(false);
-        setStep('initialize');
-      }
+    if (step !== 'check') return;
+    
+    if (isCheckingPool) return;
+
+    if (isPoolCheckError || !slot0 || slot0[0] === 0n) {
+      setPoolExists(false);
+      setStep('initialize');
       setTxStatus('idle');
+      return;
     }
-  }, [slot0, step]);
+
+    setPoolExists(true);
+    const price = sqrtPriceX96ToPrice(slot0[0], token0.decimals, token1.decimals);
+    setCurrentPrice(price);
+    setCurrentTick(Number(slot0[1]));
+    
+    const defaultMin = (price * 0.9).toFixed(6);
+    const defaultMax = (price * 1.1).toFixed(6);
+    setMinPrice(defaultMin);
+    setMaxPrice(defaultMax);
+    updateTicks(defaultMin, defaultMax, false);
+    
+    setStep('range');
+    setTxStatus('idle');
+  }, [slot0, step, isCheckingPool, isPoolCheckError, token0.decimals, token1.decimals]);
 
   useEffect(() => {
     if (isSuccess && txHash) {
       if (txStatus === 'initializing') {
         setPoolExists(true);
-        setStep('range');
-        refetchPool();
+        refetchPool().then(() => {
+          setStep('range');
+        });
       } else {
         setTxStatus('success');
       }
@@ -268,6 +290,29 @@ export default function ManageLiquidity() {
     }
   };
 
+  const handleSwapTokens = () => {
+    const temp = token0;
+    setToken0(token1);
+    setToken1(temp);
+    setAmount0('');
+    setAmount1('');
+  };
+
+  const handleSelectToken = (token: typeof TOKEN_LIST[0], type: 'token0' | 'token1') => {
+    if (type === 'token0') {
+      if (token.address === token1.address) {
+        setToken1(token0);
+      }
+      setToken0(token);
+    } else {
+      if (token.address === token0.address) {
+        setToken0(token1);
+      }
+      setToken1(token);
+    }
+    setShowTokenSelector(null);
+  };
+
   const handleSelectFee = (fee: number, tickSpacing: number) => {
     setSelectedFee(fee);
     setSelectedTickSpacing(tickSpacing);
@@ -277,8 +322,6 @@ export default function ManageLiquidity() {
     if (selectedFee === null) return;
     setStep('check');
     setTxStatus('checking');
-    // Force refetch with the new pool ID
-    refetchPool();
   };
 
   const handleInitializePool = async () => {
@@ -287,16 +330,19 @@ export default function ManageLiquidity() {
     setError('');
 
     try {
+      const addr0 = token0.address.toLowerCase();
+      const addr1 = token1.address.toLowerCase();
+      let currency0 = addr0 < addr1 ? token0.address : token1.address;
+      let currency1 = addr0 < addr1 ? token1.address : token0.address;
+
       const poolKey = {
-        currency0: TOKENS.ETH.address,
-        currency1: TOKENS.USDC.address,
+        currency0,
+        currency1,
         fee: selectedFee,
         tickSpacing: selectedTickSpacing,
         hooks: HOOK_ADDRESS,
       };
 
-      // Starting price: 1 ETH = 2000 USDC
-      // sqrt(2000) * 2^96 = 79228162514264337593543950336000000
       const startingPrice = BigInt('79228162514264337593543950336000000');
 
       writeContract({
@@ -309,7 +355,6 @@ export default function ManageLiquidity() {
           setTxHash(hash);
         },
         onError: (err: any) => {
-          // If pool already exists, just move to range step
           if (err.message?.includes('AlreadyInitialized') || err.message?.includes('pool already exists')) {
             setPoolExists(true);
             setStep('range');
@@ -331,7 +376,7 @@ export default function ManageLiquidity() {
       return;
     }
 
-    if (!usdcAmount || !ethAmount || parseFloat(usdcAmount) <= 0 || parseFloat(ethAmount) <= 0) {
+    if (!amount0 || !amount1 || parseFloat(amount0) <= 0 || parseFloat(amount1) <= 0) {
       setError('Please enter valid amounts');
       return;
     }
@@ -341,7 +386,7 @@ export default function ManageLiquidity() {
 
     try {
       writeContract({
-        address: TOKENS.USDC.address as `0x${string}`,
+        address: token1.address as `0x${string}`,
         abi: [
           {
             inputs: [{ name: 'spender', type: 'address' }, { name: 'amount', type: 'uint256' }],
@@ -352,7 +397,7 @@ export default function ManageLiquidity() {
           }
         ],
         functionName: 'approve',
-        args: [PERMIT2_ADDRESS, parseUnits(usdcAmount, 6)],
+        args: [PERMIT2_ADDRESS, parseUnits(amount1, token1.decimals)],
       }, {
         onSuccess: () => {
           writeContract({
@@ -360,9 +405,9 @@ export default function ManageLiquidity() {
             abi: PERMIT2_ABI,
             functionName: 'approve',
             args: [
-              TOKENS.USDC.address,
+              token1.address,
               POSITION_MANAGER_ADDRESS,
-              parseUnits(usdcAmount, 6),
+              parseUnits(amount1, token1.decimals),
               Math.floor(Date.now() / 1000) + 3600
             ],
           }, {
@@ -376,7 +421,7 @@ export default function ManageLiquidity() {
           });
         },
         onError: (err: any) => {
-          setError('USDC approval failed: ' + err.message);
+          setError('Token approval failed: ' + err.message);
           setTxStatus('error');
         }
       });
@@ -389,13 +434,18 @@ export default function ManageLiquidity() {
   const mintLiquidity = () => {
     setTxStatus('pending');
     
-    const usdc = parseUnits(usdcAmount, 6);
-    const eth = parseUnits(ethAmount, 18);
-    const liquidity = (usdc * eth) / 10n**6n;
+    const amount0Parsed = parseUnits(amount0, token0.decimals);
+    const amount1Parsed = parseUnits(amount1, token1.decimals);
+    const liquidity = (amount0Parsed * amount1Parsed) / BigInt(10 ** Math.min(token0.decimals, token1.decimals));
     
+    const addr0 = token0.address.toLowerCase();
+    const addr1 = token1.address.toLowerCase();
+    let currency0 = addr0 < addr1 ? token0.address : token1.address;
+    let currency1 = addr0 < addr1 ? token1.address : token0.address;
+
     const poolKey = {
-      currency0: TOKENS.ETH.address,
-      currency1: TOKENS.USDC.address,
+      currency0,
+      currency1,
       fee: selectedFee!,
       tickSpacing: selectedTickSpacing,
       hooks: HOOK_ADDRESS,
@@ -408,12 +458,18 @@ export default function ManageLiquidity() {
       salt: '0x0000000000000000000000000000000000000000000000000000000000000000' as `0x${string}`,
     };
 
+    const value = token0.address === '0x0000000000000000000000000000000000000000' 
+      ? amount0Parsed 
+      : token1.address === '0x0000000000000000000000000000000000000000' 
+        ? amount1Parsed 
+        : BigInt(0);
+
     writeContract({
       address: POSITION_MANAGER_ADDRESS as `0x${string}`,
       abi: POSITION_MANAGER_ABI,
       functionName: 'mint',
       args: [mintParams, liquidity],
-      value: parseUnits(ethAmount, 18),
+      value,
     }, {
       onSuccess: (hash) => {
         setTxHash(hash);
@@ -426,20 +482,22 @@ export default function ManageLiquidity() {
   };
 
   const copyPoolInfo = () => {
-    const info = `Pool: ETH/USDC
+    const info = `Pool: ${token0.symbol}/${token1.symbol}
 Fee: ${selectedFee ? selectedFee / 10000 : 0.05}%
 Hook: ${HOOK_ADDRESS}`;
     navigator.clipboard.writeText(info);
     setCopied(true);
-    setTimeout(() => setCopied(false), 2002);
+    setTimeout(() => setCopied(false), 2000);
   };
 
-  const setMaxBalance = (token: 'ETH' | 'USDC') => {
-    if (token === 'ETH' && ethBalance) {
-      const maxAmount = parseFloat(formatUnits(ethBalance.value, 18)) - 0.01;
-      if (maxAmount > 0) setEthAmount(maxAmount.toFixed(6));
-    } else if (token === 'USDC' && usdcBalance) {
-      setUsdcAmount(formatUnits(usdcBalance.value, 6));
+  const setMaxBalance = (token: 'token0' | 'token1') => {
+    if (token === 'token0' && balance0) {
+      const maxAmount = parseFloat(formatUnits(balance0.value, token0.decimals));
+      const reserve = token0.address === '0x0000000000000000000000000000000000000000' ? 0.01 : 0;
+      const finalAmount = Math.max(0, maxAmount - reserve);
+      if (finalAmount > 0) setAmount0(finalAmount.toFixed(6));
+    } else if (token === 'token1' && balance1) {
+      setAmount1(formatUnits(balance1.value, token1.decimals));
     }
   };
 
@@ -464,6 +522,17 @@ Hook: ${HOOK_ADDRESS}`;
     }
   };
 
+  const getStepNumber = () => {
+    switch (step) {
+      case 'select-pair': return 1;
+      case 'check': return 2;
+      case 'initialize': return 2;
+      case 'range': return 3;
+      case 'deposit': return 4;
+      default: return 1;
+    }
+  };
+
   return (
     <div className="min-h-screen px-4 py-8">
       <div className="max-w-xl mx-auto">
@@ -472,7 +541,7 @@ Hook: ${HOOK_ADDRESS}`;
           <div>
             <h1 className="text-2xl font-bold text-gray-800">Add Liquidity</h1>
             <p className="text-sm text-gray-500 mt-1">
-              {step === 'select-fee' && 'Choose a fee tier'}
+              {step === 'select-pair' && 'Select pair and fee tier'}
               {step === 'check' && 'Checking pool status...'}
               {step === 'initialize' && 'Pool needs initialization'}
               {step === 'range' && 'Set your price range'}
@@ -489,13 +558,9 @@ Hook: ${HOOK_ADDRESS}`;
 
         {/* Progress Steps */}
         <div className="flex items-center justify-between mb-6 px-2">
-          {['Fee', 'Pool', 'Range', 'Deposit'].map((label, idx) => {
+          {['Pair', 'Pool', 'Range', 'Deposit'].map((label, idx) => {
             const stepNum = idx + 1;
-            let currentStepNum = 1;
-            if (step === 'select-fee') currentStepNum = 1;
-            else if (step === 'check' || step === 'initialize') currentStepNum = 2;
-            else if (step === 'range') currentStepNum = 3;
-            else if (step === 'deposit') currentStepNum = 4;
+            const currentStepNum = getStepNumber();
             
             const isActive = stepNum === currentStepNum;
             const isCompleted = stepNum < currentStepNum;
@@ -550,61 +615,127 @@ Hook: ${HOOK_ADDRESS}`;
         {/* Main Content Card */}
         <div className="bg-white rounded-3xl p-6 shadow-xl border border-gray-100">
           
-          {/* STEP 1: Select Fee Tier - 2x2 Grid */}
-          {step === 'select-fee' && (
+          {/* STEP 1: Select Pair and Fee (Combined) */}
+          {step === 'select-pair' && (
             <div className="space-y-6">
-              <div className="text-center py-4">
-                <div className="w-16 h-16 bg-pink-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <Settings className="w-8 h-8 text-pink-500" />
-                </div>
-                <h3 className="text-xl font-bold text-gray-800 mb-2">Select Fee Tier</h3>
-                <p className="text-gray-500 text-sm mb-6">
-                  Choose the fee tier for your liquidity position
-                </p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                {FEE_TIERS.map((tier) => (
-                  <button
-                    key={tier.fee}
-                    onClick={() => handleSelectFee(tier.fee, tier.ticks)}
-                    className={`relative p-4 rounded-2xl border-2 text-left transition-all ${
-                      selectedFee === tier.fee
-                        ? 'border-pink-500 bg-pink-50 shadow-md'
-                        : 'border-gray-200 hover:border-pink-200 hover:bg-gray-50'
-                    }`}
+              {/* Token Selection - No bg-gray-50 wrapper */}
+              <div className="rounded-2xl space-y-3">
+                {/* Token 0 */}
+                <div className="flex items-center justify-between bg-white rounded-xl p-3 border border-gray-200">
+                  <button 
+                    onClick={() => setShowTokenSelector('token0')}
+                    className="flex items-center gap-2 hover:bg-gray-50 p-2 rounded-lg transition-colors"
                   >
-                    <div className={`font-bold text-xl mb-1 ${selectedFee === tier.fee ? 'text-pink-700' : 'text-gray-800'}`}>
-                      {tier.label}
-                    </div>
-                    <div className="text-xs text-gray-500 leading-tight">{tier.description}</div>
-                    
-                    {selectedFee === tier.fee && (
-                      <div className="absolute top-2 right-2 w-5 h-5 bg-pink-500 rounded-full flex items-center justify-center">
-                        <Check className="w-3 h-3 text-white" />
-                      </div>
-                    )}
+                    <img src={token0.icon} alt={token0.symbol} className="w-8 h-8 rounded-full" />
+                    <span className="font-bold text-lg">{token0.symbol}</span>
+                    <ChevronDown className="w-4 h-4 text-gray-400" />
                   </button>
-                ))}
+                  <div className="text-right">
+                    <div className="text-sm text-gray-500">Balance: {balance0 ? parseFloat(formatUnits(balance0.value, token0.decimals)).toFixed(4) : '--'}</div>
+                  </div>
+                </div>
+
+                {/* Swap Button */}
+                <div className="flex justify-center -my-2 relative z-10">
+                  <button 
+                    onClick={handleSwapTokens}
+                    className="p-2 bg-white border-2 border-gray-100 shadow-md rounded-xl hover:bg-gray-50 transition-colors"
+                  >
+                    <ArrowUpDown className="w-4 h-4 text-gray-600" />
+                  </button>
+                </div>
+
+                {/* Token 1 */}
+                <div className="flex items-center justify-between bg-white rounded-xl p-3 border border-gray-200">
+                  <button 
+                    onClick={() => setShowTokenSelector('token1')}
+                    className="flex items-center gap-2 hover:bg-gray-50 p-2 rounded-lg transition-colors"
+                  >
+                    <img src={token1.icon} alt={token1.symbol} className="w-8 h-8 rounded-full" />
+                    <span className="font-bold text-lg">{token1.symbol}</span>
+                    <ChevronDown className="w-4 h-4 text-gray-400" />
+                  </button>
+                  <div className="text-right">
+                    <div className="text-sm text-gray-500">Balance: {balance1 ? parseFloat(formatUnits(balance1.value, token1.decimals)).toFixed(4) : '--'}</div>
+                  </div>
+                </div>
               </div>
 
-              <button
-                onClick={handleCheckPool}
-                disabled={selectedFee === null || txStatus === 'checking'}
-                className="w-full py-4 bg-gradient-to-r from-pink-500 to-purple-600 text-white rounded-2xl font-bold text-lg shadow-lg shadow-pink-500/25 hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-              >
-                {txStatus === 'checking' ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    Checking Pool...
-                  </>
-                ) : (
-                  <>
-                    <Search className="w-5 h-5" />
-                    Check Pool Status
-                  </>
-                )}
-              </button>
+              {/* Fee Selection - Always Visible */}
+              <div className="space-y-4">
+                <h4 className="font-semibold text-gray-700">Select Fee Tier</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  {FEE_TIERS.map((tier) => (
+                    <button
+                      key={tier.fee}
+                      onClick={() => handleSelectFee(tier.fee, tier.ticks)}
+                      className={`relative p-4 rounded-2xl border-2 text-left transition-all ${
+                        selectedFee === tier.fee
+                          ? 'border-pink-500 bg-pink-50 shadow-md'
+                          : 'border-gray-200 hover:border-pink-200 hover:bg-gray-50'
+                      }`}
+                    >
+                      <div className={`font-bold text-xl mb-1 ${selectedFee === tier.fee ? 'text-pink-700' : 'text-gray-800'}`}>
+                        {tier.label}
+                      </div>
+                      <div className="text-xs text-gray-500 leading-tight">{tier.description}</div>
+                      
+                      {selectedFee === tier.fee && (
+                        <div className="absolute top-2 right-2 w-5 h-5 bg-pink-500 rounded-full flex items-center justify-center">
+                          <Check className="w-3 h-3 text-white" />
+                        </div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  onClick={handleCheckPool}
+                  disabled={selectedFee === null || txStatus === 'checking'}
+                  className="w-full py-4 bg-gradient-to-r from-pink-500 to-purple-600 text-white rounded-2xl font-bold text-lg shadow-lg shadow-pink-500/25 hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {txStatus === 'checking' ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      Checking Pool...
+                    </>
+                  ) : (
+                    <>
+                      <Search className="w-5 h-5" />
+                      Check Pool Status
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Token Selector Modal */}
+          {showTokenSelector && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-3xl p-6 max-w-sm w-full max-h-[80vh] overflow-y-auto">
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-lg font-bold">Select Token</h3>
+                  <button onClick={() => setShowTokenSelector(null)} className="p-2 hover:bg-gray-100 rounded-full">
+                    <Plus className="w-5 h-5 rotate-45" />
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {TOKEN_LIST.map((token) => (
+                    <button
+                      key={token.symbol}
+                      onClick={() => handleSelectToken(token, showTokenSelector)}
+                      className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-gray-50 transition-colors"
+                    >
+                      <img src={token.icon} alt={token.symbol} className="w-10 h-10 rounded-full" />
+                      <div className="text-left">
+                        <div className="font-bold">{token.symbol}</div>
+                        <div className="text-sm text-gray-500">{token.name}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
 
@@ -619,10 +750,10 @@ Hook: ${HOOK_ADDRESS}`;
                   {step === 'check' ? 'Checking Pool...' : 'Pool Not Initialized'}
                 </h3>
                 <p className="text-gray-500 text-sm mb-2">
-                  Fee Tier: <span className="font-semibold text-pink-600">{selectedFee ? FEE_TIERS.find(f => f.fee === selectedFee)?.label : ''}</span>
+                  {token0.symbol}/{token1.symbol} • Fee: {selectedFee ? FEE_TIERS.find(f => f.fee === selectedFee)?.label : ''}
                 </p>
                 {step === 'initialize' && (
-                  <p className="text-gray-500 text-sm">
+                  <p className="text-gray-500 text-xs font-mono mt-2">
                     Pool ID: {selectedFee ? getPoolId(selectedFee, selectedTickSpacing).slice(0, 10) : ''}...
                   </p>
                 )}
@@ -632,7 +763,7 @@ Hook: ${HOOK_ADDRESS}`;
                 <div className="space-y-4">
                   <div className="bg-blue-50 rounded-xl p-4 text-sm text-blue-800">
                     <p className="font-semibold mb-1">Starting Price</p>
-                    <p className="text-blue-600">The pool will be initialized at 1 ETH = 2000 USDC</p>
+                    <p className="text-blue-600">The pool will be initialized at 1 {token0.symbol} = 2000 {token1.symbol}</p>
                   </div>
 
                   <button
@@ -651,10 +782,10 @@ Hook: ${HOOK_ADDRESS}`;
                   </button>
                   
                   <button
-                    onClick={() => setStep('select-fee')}
+                    onClick={() => setStep('select-pair')}
                     className="w-full py-3 text-gray-500 font-medium hover:text-gray-700 transition-colors"
                   >
-                    ← Back to Fee Selection
+                    ← Back to Pair Selection
                   </button>
                 </div>
               )}
@@ -669,7 +800,7 @@ Hook: ${HOOK_ADDRESS}`;
                 <div className="text-3xl font-bold text-gray-800">
                   {currentPrice ? currentPrice.toFixed(4) : '--'}
                 </div>
-                <div className="text-sm text-gray-500 mt-1">ETH per USDC</div>
+                <div className="text-sm text-gray-500 mt-1">{token1.symbol} per {token0.symbol}</div>
                 <div className="text-xs text-pink-600 mt-2 font-medium">
                   Fee: {FEE_TIERS.find(f => f.fee === selectedFee)?.label}
                 </div>
@@ -702,7 +833,7 @@ Hook: ${HOOK_ADDRESS}`;
                         step="0.0001"
                         className="w-full bg-transparent text-2xl font-bold text-gray-800 outline-none"
                       />
-                      <div className="text-xs text-gray-400 mt-1">ETH/USDC</div>
+                      <div className="text-xs text-gray-400 mt-1">{token1.symbol}/{token0.symbol}</div>
                     </div>
                     <div className="bg-gray-50 rounded-2xl p-4 border-2 border-transparent focus-within:border-pink-500 transition-colors">
                       <label className="text-xs text-gray-500 font-medium mb-1 block">Max Price</label>
@@ -714,7 +845,7 @@ Hook: ${HOOK_ADDRESS}`;
                         step="0.0001"
                         className="w-full bg-transparent text-2xl font-bold text-gray-800 outline-none"
                       />
-                      <div className="text-xs text-gray-400 mt-1">ETH/USDC</div>
+                      <div className="text-xs text-gray-400 mt-1">{token1.symbol}/{token0.symbol}</div>
                     </div>
                   </div>
                 ) : (
@@ -742,10 +873,10 @@ Hook: ${HOOK_ADDRESS}`;
               </button>
               
               <button
-                onClick={() => setStep('select-fee')}
+                onClick={() => setStep('select-pair')}
                 className="w-full py-3 text-gray-500 font-medium hover:text-gray-700 transition-colors"
               >
-                ← Change Fee Tier
+                ← Change Pair or Fee
               </button>
             </div>
           )}
@@ -753,33 +884,33 @@ Hook: ${HOOK_ADDRESS}`;
           {/* STEP 4: Deposit */}
           {step === 'deposit' && (
             <div className="space-y-4">
-              {/* ETH Input */}
+              {/* Token 0 Input */}
               <div className="bg-gray-50 rounded-2xl p-4">
                 <div className="flex justify-between mb-2">
-                  <span className="text-gray-500 text-sm font-medium">Deposit ETH</span>
+                  <span className="text-gray-500 text-sm font-medium">Deposit {token0.symbol}</span>
                   <button 
-                    onClick={() => setMaxBalance('ETH')}
+                    onClick={() => setMaxBalance('token0')}
                     className="text-pink-500 text-sm font-semibold hover:text-pink-600"
                   >
-                    Balance: {ethBalance ? parseFloat(formatUnits(ethBalance.value, 18)).toFixed(4) : '--'}
+                    Balance: {balance0 ? parseFloat(formatUnits(balance0.value, token0.decimals)).toFixed(4) : '--'}
                   </button>
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <input
                     type="number"
-                    value={ethAmount}
-                    onChange={(e) => setEthAmount(e.target.value)}
+                    value={amount0}
+                    onChange={(e) => setAmount0(e.target.value)}
                     placeholder="0"
                     step="0.001"
                     className="flex-1 min-w-0 bg-transparent text-3xl text-gray-800 placeholder-gray-300 outline-none font-light"
                   />
                   <div className="flex items-center gap-2 px-3 py-2 rounded-2xl font-semibold text-gray-700 bg-white border border-gray-200 shadow-sm">
-                    <img src={TOKEN_INFO.ETH.icon} alt="ETH" className="w-7 h-7 rounded-full" />
-                    <span className="text-lg">ETH</span>
+                    <img src={token0.icon} alt={token0.symbol} className="w-7 h-7 rounded-full" />
+                    <span className="text-lg">{token0.symbol}</span>
                   </div>
                 </div>
                 <div className="text-gray-400 text-sm mt-2 font-medium">
-                  ${ethAmount ? (parseFloat(ethAmount) * 2000).toFixed(2) : '0.00'}
+                  ${amount0 ? (parseFloat(amount0) * (token0.symbol === 'ETH' ? 2000 : 1)).toFixed(2) : '0.00'}
                 </div>
               </div>
 
@@ -790,32 +921,32 @@ Hook: ${HOOK_ADDRESS}`;
                 </div>
               </div>
 
-              {/* USDC Input */}
+              {/* Token 1 Input */}
               <div className="bg-gray-50 rounded-2xl p-4">
                 <div className="flex justify-between mb-2">
-                  <span className="text-gray-500 text-sm font-medium">Deposit USDC</span>
+                  <span className="text-gray-500 text-sm font-medium">Deposit {token1.symbol}</span>
                   <button 
-                    onClick={() => setMaxBalance('USDC')}
+                    onClick={() => setMaxBalance('token1')}
                     className="text-pink-500 text-sm font-semibold hover:text-pink-600"
                   >
-                    Balance: {usdcBalance ? parseFloat(formatUnits(usdcBalance.value, 6)).toFixed(2) : '--'}
+                    Balance: {balance1 ? parseFloat(formatUnits(balance1.value, token1.decimals)).toFixed(4) : '--'}
                   </button>
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <input
                     type="number"
-                    value={usdcAmount}
-                    onChange={(e) => setUsdcAmount(e.target.value)}
+                    value={amount1}
+                    onChange={(e) => setAmount1(e.target.value)}
                     placeholder="0"
                     className="flex-1 min-w-0 bg-transparent text-3xl text-gray-800 placeholder-gray-300 outline-none font-light"
                   />
                   <div className="flex items-center gap-2 px-3 py-2 rounded-2xl font-semibold text-gray-700 bg-white border border-gray-200 shadow-sm">
-                    <img src={TOKEN_INFO.USDC.icon} alt="USDC" className="w-7 h-7 rounded-full" />
-                    <span className="text-lg">USDC</span>
+                    <img src={token1.icon} alt={token1.symbol} className="w-7 h-7 rounded-full" />
+                    <span className="text-lg">{token1.symbol}</span>
                   </div>
                 </div>
                 <div className="text-gray-400 text-sm mt-2 font-medium">
-                  ${usdcAmount || '0.00'}
+                  ${amount1 || '0.00'}
                 </div>
               </div>
 
