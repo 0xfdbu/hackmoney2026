@@ -1,8 +1,7 @@
+
 # PrivyFlow 🔒 - Privacy-Preserving DEX on Uniswap v4
 
 PrivyFlow is a dark pool DEX built on Uniswap v4 hooks that enables privacy-preserving swaps using a commit-reveal scheme. Users commit to trades without revealing amounts, then execute after a 10-block delay to prevent MEV and front-running.
-
-![PrivyFlow Interface](images/1.png)
 
 ## 🎯 Problem Statement
 
@@ -18,7 +17,7 @@ PrivyFlow is a dark pool DEX built on Uniswap v4 hooks that enables privacy-pres
 ### Commit-Reveal Flow (3 Phases)
 
 **Phase 1: Commit**
-- User enters swap amount (e.g., 10 USDC)
+- User enters swap amount (e.g., 1 USDC)
 - Frontend generates random salt (e.g., `52555232`)
 - Computes commitment: `keccak256(amount, minOut, salt)`
 - Submits commitment hash to CommitStore
@@ -125,7 +124,7 @@ npm run dev
 ### Swapping (Privacy Mode)
 
 **1. Commit Phase**
-- Enter swap amount (e.g., 10 USDC → ETH)
+- Enter swap amount (e.g., 1 USDC → ETH)
 - Select slippage (recommend 100% for skewed pools)
 - Click **"Commit Swap"**
 - **⚠️ CRITICAL: SAVE YOUR SALT!** Required for reveal
@@ -175,7 +174,7 @@ npm run dev
 
 ## 🧪 Live Transactions
 
-### Example Flow (10 USDC → ETH)
+### Example Flow (1 USDC → ETH)
 
 **Step 1: Commit**
 ![Commit Transaction](images/1.png)
@@ -190,17 +189,12 @@ npm run dev
 **Step 3: Swap Success**
 ![Swap Success](images/3.png)
 - **Tx**: `0xd8c5eec284672a129f50cf92dfc0bd6bb8a35f93d9159b47ac3f9ac3656bcb0c`
-- Swap executed through DarkPoolHook
-
-### Successful Dark Pool Swap Details
-**Tx Hash**: `0xce5347734c3aae046cec3b6a464e1a16698ff7e65f8265bebf61e2417f4859c9`
-
-- **Input**: 10 USDC
-- **Output**: 0.004745 ETH
-- **Rate**: ~2,107 USDC/ETH
-- **Commit Block**: 10213665
-- **Reveal Block**: 10213675
-- **Pool Fee**: 0.05%
+- **Block**: 10214314
+- **From**: `0x89feEbA43b294425C0d7B482770eefbcc1359f8d`
+- **To**: `0xB276FA545ed8848EC49b2a925c970313253B90Ba` (SwapRouter)
+- **Input**: 1 USDC
+- **Output**: 0.000470821187905029 ETH
+- **Rate**: ~2,124 USDC/ETH
 
 ### Contract Verification
 - ✅ CommitStore deployed and verified
