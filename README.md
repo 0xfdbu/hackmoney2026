@@ -2,7 +2,8 @@
 
 PrivyFlow is a dark pool DEX built on Uniswap v4 hooks that enables privacy-preserving swaps using a commit-reveal scheme. Users commit to trades without revealing amounts, then execute after a 10-block delay to prevent MEV and front-running.
 
-(images/1.png)
+![Commit Transaction](images/1.png)
+
 
 **Live Demo**: [privyflow.vercel.app](https://privyflow.vercel.app) (connect to Sepolia)
 
