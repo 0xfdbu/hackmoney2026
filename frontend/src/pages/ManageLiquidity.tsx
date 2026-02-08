@@ -598,7 +598,7 @@ Hook: ${HOOK_ADDRESS}`;
                 Experimental Feature
               </h3>
               <p className="text-amber-700 text-xs mb-2">
-                This is not MEV protected! Use{' '}
+                This is not MEV protected! Nor Reliable [Might Fail] Use{' '}
                 <a href="https://app.uniswap.org/positions" target="_blank" rel="noopener noreferrer" className="text-pink-600 underline font-medium">
                   Uniswap UI
                 </a>{' '}
