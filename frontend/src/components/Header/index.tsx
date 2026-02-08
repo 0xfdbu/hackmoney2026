@@ -1,7 +1,7 @@
 import { useAppKit } from '@reown/appkit/react';
 import { useAccount, useDisconnect } from 'wagmi';
 import { useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, Link, NavLink } from 'react-router-dom';
 import { 
   Wallet, 
   ExternalLink, 
@@ -11,7 +11,11 @@ import {
   ArrowLeftRight, 
   Droplets, 
   Github,
-  History
+  History,
+  Blend, // Mixing/pooling concept
+  EyeOff, // Privacy concept - alternative option
+  ShieldCheck, // Security concept - alternative option
+  Sparkles // Magic/premium feel - alternative option
 } from 'lucide-react';
 
 export default function Header() {
@@ -36,37 +40,62 @@ export default function Header() {
   ];
 
   return (
-    <header className="fixed inset-x-0 top-0 h-16 bg-white/80 backdrop-blur-md border-b border-gray-100 z-50">
+    <header className="fixed inset-x-0 top-0 h-16 bg-white/60 backdrop-blur-md border-b border-gray-100 z-50">
       <div className="h-full flex items-center justify-between px-3 sm:px-4 max-w-7xl mx-auto">
-        {/* Logo */}
-        <a href="/" className="flex items-center gap-2 sm:gap-3 hover:opacity-80 transition-opacity shrink-0">
-          <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-gradient-to-br from-pink-400 to-rose-500 flex items-center justify-center shadow-lg shadow-pink-500/20 shrink-0">
-            <span className="text-white font-bold text-base sm:text-lg">P</span>
+        {/* Logo - Cool icon + text design */}
+        <Link to="/" className="flex items-center gap-2.5 hover:opacity-80 transition-all group shrink-0">
+          {/* Icon Container - Animated gradient */}
+          <div className="relative w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-br from-pink-400 via-rose-500 to-purple-600 flex items-center justify-center shadow-lg shadow-pink-500/20 group-hover:shadow-pink-500/30 group-hover:scale-105 transition-all duration-300">
+            {/* Option 1: Blend (Mixing/Pooling) - Best for Dark Pool DEX */}
+            <Blend className="w-5 h-5 sm:w-6 sm:h-6 text-white transform rotate-180" />
+            
+            {/* Option 2: EyeOff (Privacy/Hidden) - Uncomment to use instead */}
+            {/* <EyeOff className="w-5 h-5 sm:w-6 sm:h-6 text-white" /> */}
+            
+            {/* Option 3: ShieldCheck (Security/Trust) - Uncomment to use instead */}
+            {/* <ShieldCheck className="w-5 h-5 sm:w-6 sm:h-6 text-white" /> */}
+            
+            {/* Option 4: Sparkles (Magic/Exclusive) - Uncomment to use instead */}
+            {/* <Sparkles className="w-5 h-5 sm:w-6 sm:h-6 text-white" /> */}
+            
+            {/* Subtle glow effect */}
+            <div className="absolute inset-0 rounded-xl bg-white/20 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
           </div>
+          
+          {/* Text Logo */}
           <div className="flex flex-col min-w-0">
-            <span className="text-gray-800 font-bold text-base sm:text-lg leading-tight">PrivyFlow</span>
-            <span className="text-gray-400 text-[10px] sm:text-xs font-medium hidden sm:block">Dark Pool DEX</span>
+            <span className="text-gray-900 font-bold text-lg sm:text-xl leading-tight tracking-tight">
+              Privy<span className="text-pink-500">Flow</span>
+            </span>
+            <span className="text-gray-400 text-[10px] sm:text-xs font-medium hidden sm:block tracking-wide uppercase">
+              Dark Pool DEX
+            </span>
           </div>
-        </a>
+        </Link>
 
         {/* Desktop Navigation */}
         <nav className="hidden md:flex items-center gap-1 bg-gray-100/80 rounded-2xl p-1">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const active = isActive(item.path);
             return (
-              <a
+              <NavLink
                 key={item.path}
-                href={item.path}
-                className={`flex items-center gap-2 px-4 py-2 rounded-xl transition-all ${
-                  active
-                    ? 'text-gray-900 font-semibold bg-white shadow-sm'
-                    : 'text-gray-500 hover:text-gray-800 font-medium hover:bg-white/50'
-                }`}
+                to={item.path}
+                className={({ isActive }) => 
+                  `flex items-center gap-2 px-4 py-2 rounded-xl transition-all ${
+                    isActive
+                      ? 'text-gray-900 font-semibold bg-white shadow-sm'
+                      : 'text-gray-500 hover:text-gray-800 font-medium hover:bg-white/50'
+                  }`
+                }
               >
-                <Icon className={`w-4 h-4 ${active ? 'text-pink-500' : ''}`} />
-                {item.label}
-              </a>
+                {({ isActive }) => (
+                  <>
+                    <Icon className={`w-4 h-4 ${isActive ? 'text-pink-500' : ''}`} />
+                    {item.label}
+                  </>
+                )}
+              </NavLink>
             );
           })}
           {/* GitHub Link - Desktop */}
@@ -127,9 +156,9 @@ export default function Header() {
               const Icon = item.icon;
               const active = isActive(item.path);
               return (
-                <a
+                <Link
                   key={item.path}
-                  href={item.path}
+                  to={item.path}
                   onClick={() => setMobileMenuOpen(false)}
                   className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${
                     active
@@ -143,7 +172,7 @@ export default function Header() {
                     <Icon className={`w-5 h-5 ${active ? 'text-pink-500' : 'text-gray-500'}`} />
                   </div>
                   {item.label}
-                </a>
+                </Link>
               );
             })}
             

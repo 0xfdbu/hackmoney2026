@@ -1,6 +1,9 @@
+
 # PrivyFlow 🔒 - Privacy-Preserving DEX on Uniswap v4
 
 PrivyFlow is a dark pool DEX built on Uniswap v4 hooks that enables privacy-preserving swaps using a commit-reveal scheme. Users commit to trades without revealing amounts, then execute after a 10-block delay to prevent MEV and front-running.
+
+**🌐 Live on Sepolia Testnet**: [privyflow.io](https://privyflow.io)
 
 ## 🎯 Problem Statement
 
@@ -9,198 +12,201 @@ PrivyFlow is a dark pool DEX built on Uniswap v4 hooks that enables privacy-pres
 - They front-run you to extract value
 - You get worse prices than expected
 
-**Solution**: Hide the trade details until execution time using cryptographic commitments.
+**Solution**: Hide the trade details until execution time using cryptographic commitments with a 10-block delay.
 
 ## 🔧 How It Works
 
-### Commit-Reveal Flow
+### Commit-Reveal Flow (3 Phases)
+
+**Phase 1: Commit**
+- User enters swap amount (e.g., 10 USDC)
+- Frontend generates random salt (e.g., `52555232`)
+- Computes commitment: `keccak256(amount, minOut, salt)`
+- Submits commitment hash to CommitStore
+- Waits 10 blocks (~2 minutes)
+
+**Phase 2: Reveal**
+- After 10-block delay passes
+- User approves token spend (if ERC20)
+- Reveals salt + commitment to DarkPoolHook
+- Hook verifies commitment is valid and not spent
+- Marks commitment as revealed
+
+**Phase 3: Execute**
+- Uniswap v4 PoolManager executes swap
+- Tokens transferred via hook validation
+- Commitment marked as spent forever
+
+### System Architecture
 
 ```
-┌─────────────┐     Commit Phase      ┌─────────────┐
-│   User      │ ─────────────────────>│ CommitStore │
-│             │  commitment =         │  Contract   │
-│  amount=?   │  keccak256(amount,    │             │
-│  salt=secret│  minOut, salt)        │  Stores hash│
-└─────────────┘                       └─────────────┘
-                                              │
-                                              │ 10 blocks
-                                              ▼
-┌─────────────┐     Reveal Phase      ┌─────────────┐
-│   User      │ ─────────────────────>│  DarkPool   │
-│             │  Reveal: amount,      │    Hook     │
-│  reveals    │  minOut, salt         │             │
-│  secret     │                       │  Verifies & │
-└─────────────┘                       │  executes   │
-                                      └─────────────┘
+User → Frontend → Smart Contracts → Uniswap v4 Pool
+        ↓              ↓
+    [React/Wagmi]  [CommitStore] ← Stores commitments
+    [Salt Gen]     [DarkPoolHook] ← Validates + executes
+    [Countdown]    [SwapRouter] ← Handles settlement
 ```
 
-### Technical Architecture
+## 🚀 Features
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                      Frontend                           │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐ │
-│  │  Swap UI    │  │ Salt Gen    │  │ 10-Block Timer  │ │
-│  └─────────────┘  └─────────────┘  └─────────────────┘ │
-└─────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│                   Smart Contracts                       │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐ │
-│  │ CommitStore  │  │ DarkPoolHook │  │ SwapRouter   │ │
-│  │              │  │              │  │              │ │
-│  │ - Store hash │  │ - Verify     │  │ - Execute    │ │
-│  │ - 10-block   │  │ - Reveal     │  │ - Settle     │ │
-│  │   delay      │  │ - Call swap  │  │   deltas     │ │
-│  └──────────────┘  └──────────────┘  └──────────────┘ │
-└─────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│                  Uniswap v4 Pool                        │
-│              USDC/WETH 0.3% + Hook                      │
-└─────────────────────────────────────────────────────────┘
-```
+### Privacy-First Trading
+- **Hidden Amounts**: Trade sizes encrypted using cryptographic commitments
+- **MEV Protection**: 10-block delay prevents sandwich attacks
+- **No Front-Running**: Commitments can't be frontrun or decoded
+
+### Dual Interface
+1. **Swap**: Privacy-preserving swaps via commit-reveal
+2. **Pool**: Add liquidity to ETH/USDC dark pool (fee tier selection + price range)
+
+### Liquidity Management
+- Select fee tier (0.01%, 0.05%, 0.3%, 1%)
+- Set custom price ranges or full range
+- Visual price range indicators
+- Max balance buttons for easy deposit
 
 ## 📋 Smart Contracts
 
 ### CommitStore.sol
-Stores commitments and enforces the privacy delay.
+Stores commitments and enforces the 10-block privacy delay.
 
 ```solidity
-function commit(bytes32 commitmentHash, bytes32 nullifier) external;
+function commit(bytes32 commitment, bytes32 nullifier) external;
 function canReveal(bytes32 commitment, uint256 amount, uint256 minOut, uint256 salt) 
     external view returns (bool);
 ```
 
+**Address**: `0xdC81d28a1721fcdE86d79Ce26ba3b0bEf24C116C`
+
 ### DarkPoolHook.sol
-Uniswap v4 hook that verifies commitments before allowing swaps.
+Uniswap v4 hook with `BEFORE_SWAP` flag (0x04) that verifies commitments.
 
 ```solidity
 function beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData) 
     external returns (bytes4, BeforeSwapDelta, uint24);
 ```
 
+**Address**: `0x77853497C9dEC9460fb305cbcD80C7DAF4EcDC54`
+
 ### SwapRouter.sol
 Handles the unlock/settlement pattern for Uniswap v4.
 
-```solidity
-function swap(PoolKey calldata key, SwapParams calldata params, bytes calldata hookData) 
-    external payable returns (BalanceDelta);
-```
+**Address**: `0xB276FA545ed8848EC49b2a925c970313253B90Ba`
+
+### PoolManager (Uniswap v4)
+**Address**: `0xE03A1074c86CFeDd5C142C4F04F1a1536e203543`
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 - Node.js 18+
-- Foundry
-- Sepolia ETH
+- MetaMask or Web3 wallet
+- Sepolia ETH (from [faucet](https://sepoliafaucet.com/))
 
 ### Installation
 
 ```bash
 # Clone repo
-git clone https://github.com/yourname/privyflow.git
+git clone https://github.com/0xfdbu/hackmoney2026.git
 cd privyflow
 
 # Install dependencies
-cd contracts && forge install
-cd ../frontend && npm install
-```
+npm install
 
-### Deploy Contracts
-
-```bash
-cd contracts
-source .env  # Set PRIVATE_KEY and SEPOLIA_RPC_URL
-
-# Deploy all contracts
-forge script script/Deploy.s.sol --rpc-url $SEPOLIA_RPC_URL --broadcast
-
-# Initialize pool
-forge script script/InitPool.s.sol --rpc-url $SEPOLIA_RPC_URL --broadcast
-
-# Add liquidity
-forge script script/AddLiquidity.s.sol --rpc-url $SEPOLIA_RPC_URL --broadcast
-```
-
-### Run Frontend
-
-```bash
-cd frontend
+# Run dev server
 npm run dev
 ```
 
+### Connect to Sepolia
+1. Switch MetaMask to Sepolia Testnet (Chain ID: 11155111)
+2. Get Sepolia ETH from faucet
+3. Connect wallet to PrivyFlow
+
 ## 📱 Usage Guide
 
-### 1. Commit Phase
-- Enter swap amount (e.g., 10 USDC → ETH)
-- Set slippage tolerance (recommend 100% for testing)
-- Click **"Commit Swap"**
-- **SAVE YOUR SALT!** This is required for reveal
+### Swapping (Privacy Mode)
 
-### 2. Wait 10 Blocks
+**1. Commit Phase**
+- Enter swap amount (e.g., 10 USDC → ETH)
+- Select slippage (recommend 100% for skewed pools)
+- Click **"Commit Swap"**
+- **⚠️ CRITICAL: SAVE YOUR SALT!** Required for reveal
+
+**2. Wait 10 Blocks**
 - Visual countdown shows remaining blocks
 - ~2 minutes on Sepolia
-- Go grab a coffee ☕
+- Commitment stored in localStorage
 
-### 3. Reveal Phase
-- Click **"Reveal Swap"**
-- Hook verifies your commitment
+**3. Reveal Phase**
+- Click **"Reveal Swap"** when countdown finishes
+- Hook verifies commitment on-chain
 - Swap executes through Uniswap v4
 - Receive ETH!
 
+### Adding Liquidity
+
+**1. Select Fee Tier**
+- 0.01% - Best for stable pairs
+- 0.05% - Best for blue chips
+- 0.3% - Best for most pairs
+- 1% - Best for exotic pairs
+
+**2. Check Pool Status**
+- System checks if pool exists for selected fee
+- If not initialized, you'll be prompted to initialize
+
+**3. Set Price Range**
+- View current pool price
+- Set Min/Max price range (or select Full Range)
+- Visual tick range indicators
+
+**4. Deposit**
+- Enter ETH and USDC amounts
+- Click "Add Liquidity"
+- Confirm transactions (approve + mint)
+
 ## 🔑 Key Features
 
-### Privacy by Design
-- Trade amounts hidden until execution
-- Commitment hashes stored on-chain
-- Reveal only after delay
+| Feature | Description |
+|---------|-------------|
+| **Hidden Amounts** | Trade size encrypted using keccak256 commitments |
+| **MEV Protection** | 10-block delay prevents frontrunning |
+| **Self-Custody** | No custody of funds, fully decentralized |
+| **Time-Locked** | Enforced delay between commit and reveal |
+| **Range Orders** | Full range or concentrated liquidity positions |
 
-### MEV Protection
-- 10-block delay prevents sandwich attacks
-- Commitments can't be frontrun
-- No mempool leakage of trade details
+## 🧪 Live Transactions
 
-### Uniswap v4 Integration
-- Native hook support
-- Uses v4's unlock/settlement pattern
-- Compatible with existing liquidity
+### Successful Dark Pool Swap
+**Tx Hash**: `0xce5347734c3aae046cec3b6a464e1a16698ff7e65f8265bebf61e2417f4859c9`
 
-## 🧪 Testing
+- **Input**: 10 USDC
+- **Output**: 0.004745 ETH
+- **Rate**: ~2,107 USDC/ETH
+- **Commit Block**: 10213665
+- **Reveal Block**: 10213675
+- **Pool Fee**: 0.05%
 
-### Local Testing
-```bash
-# Start Anvil
-anvil --fork-url $SEPOLIA_RPC_URL
+### Contract Verification
+- ✅ CommitStore deployed and verified
+- ✅ DarkPoolHook deployed with BEFORE_SWAP flag (0x04)
+- ✅ SwapRouter deployed with fixed settlement logic
+- ✅ Pool initialized: ETH/USDC 0.05% fee, tick spacing 10
+- ✅ Successfully executed end-to-end swap
 
-# Run tests
-forge test
-```
+## 📊 Tech Stack
 
-### Sepolia Testnet
-Contract Addresses:
-| Contract | Address |
-|----------|---------|
-| CommitStore | `0xdC81d28a1721fcdE86d79Ce26ba3b0bEf24C116C` |
-| DarkPoolHook | `0x1846217Bae61BF26612BD8d9a64b970d525B4080` |
-| SwapRouter | `0x36b42E07273CD8ECfF1125bF15771AE356F085B1` |
-| USDC | `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` |
-| WETH | `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14` |
+- **Smart Contracts**: Solidity 0.8.26, Foundry, Uniswap v4
+- **Frontend**: React 18, TypeScript, Vite, Tailwind CSS
+- **Web3 Integration**: Reown AppKit, Wagmi, Viem
+- **Network**: Ethereum Sepolia Testnet (Chain ID: 11155111)
+- **Pool**: ETH/USDC with dynamic fee tiers
 
 ## 🔒 Security Considerations
 
-- **Salt Storage**: User must save their salt - lost salt = lost funds
-- **Timing**: 10-block delay provides privacy but adds latency
-- **Price Impact**: Use high slippage (100%) for skewed pools
-
-## 🛠️ Tech Stack
-
-- **Smart Contracts**: Solidity 0.8.26, Foundry
-- **Frontend**: React 18, TypeScript, Vite, Tailwind CSS
-- **Web3**: Wagmi, Viem, Reown AppKit
-- **DEX**: Uniswap v4
+- **Salt Storage**: Salt generated client-side, never stored on-chain. Lost salt = lost funds
+- **Timing**: 10-block delay provides privacy but adds ~2min latency
+- **Price Impact**: Use high slippage (100%) for testing with skewed pools
+- **Hook Verification**: DarkPoolHook address ends in 0x...C54 to enable callbacks
 
 ## 📝 License
 
@@ -208,10 +214,11 @@ MIT License - see LICENSE file
 
 ## 🙏 Acknowledgments
 
-- Uniswap Labs for v4 hooks
+- Uniswap Labs for v4 hooks architecture
 - Foundry team for testing framework
-- Ethereum community for continuous innovation
+- Ethereum Foundation for Sepolia testnet
+- Reown (prev. WalletConnect) for AppKit
 
 ---
 
-**Built with ❤️ for Uniswap v4 Hookathon 2026**
+**Built with ❤️ for HackMoney 2026**

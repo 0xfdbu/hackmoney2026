@@ -6,7 +6,6 @@ import {
   Clock, 
   Key, 
   ArrowRight,
-  ChevronDown,
   ExternalLink,
   Copy,
   CheckCircle,
@@ -103,7 +102,7 @@ function ArchitectureDiagram() {
               <Database className="w-5 h-5" />
             </div>
             <div className="font-bold text-sm">CommitStore</div>
-            <div className="text-xs text-white/70">Stores commitments</div>
+            <div className="text-xs text-white/70">0xdC81...116C</div>
           </div>
           
           <div className="bg-gradient-to-br from-orange-500 to-red-600 rounded-2xl p-5 text-white text-center">
@@ -111,7 +110,7 @@ function ArchitectureDiagram() {
               <Layers className="w-5 h-5" />
             </div>
             <div className="font-bold text-sm">DarkPoolHook</div>
-            <div className="text-xs text-white/70">Uniswap v4 Hook</div>
+            <div className="text-xs text-white/70">0x7785...C54</div>
           </div>
           
           <div className="bg-gradient-to-br from-purple-500 to-pink-600 rounded-2xl p-5 text-white text-center">
@@ -119,7 +118,7 @@ function ArchitectureDiagram() {
               <ArrowRight className="w-5 h-5" />
             </div>
             <div className="font-bold text-sm">SwapRouter</div>
-            <div className="text-xs text-white/70">Route & Settle</div>
+            <div className="text-xs text-white/70">0xB276...90Ba</div>
           </div>
         </div>
         
@@ -134,7 +133,7 @@ function ArchitectureDiagram() {
               <Layers className="w-6 h-6" />
             </div>
             <div className="font-bold">Uniswap v4</div>
-            <div className="text-sm text-white/70">PoolManager + Liquidity</div>
+            <div className="text-sm text-white/70">ETH/USDC Pool (0.05%)</div>
           </div>
         </div>
       </div>
@@ -150,10 +149,10 @@ function FlowDiagram() {
       icon: Lock,
       color: "from-pink-500 to-rose-500",
       steps: [
-        "User enters swap amount",
+        "User enters swap amount (e.g., 10 USDC)",
         "Frontend generates random salt",
-        "Computes commitment hash",
-        "Submits to CommitStore",
+        "Computes keccak256(amount, minOut, salt)",
+        "Submits commitment hash to CommitStore",
         "Waits 10 blocks (~2 min)"
       ]
     },
@@ -163,10 +162,10 @@ function FlowDiagram() {
       color: "from-purple-500 to-indigo-500",
       steps: [
         "After 10-block delay",
-        "User approves token spend",
-        "Reveals salt + commitment",
-        "DarkPoolHook verifies",
-        "Hook marks as revealed"
+        "User approves USDC spend (if needed)",
+        "Reveals salt + commitment to DarkPoolHook",
+        "Hook verifies commitment is valid",
+        "Hook marks commitment as revealed"
       ]
     },
     {
@@ -174,9 +173,9 @@ function FlowDiagram() {
       icon: CheckCircle,
       color: "from-green-500 to-emerald-500",
       steps: [
-        "Uniswap v4 executes swap",
-        "PoolManager updates state",
-        "User receives output tokens",
+        "Uniswap v4 PoolManager executes swap",
+        "USDC transferred from user to pool",
+        "ETH transferred from pool to user",
         "Commitment spent forever"
       ]
     }
@@ -215,11 +214,11 @@ function FlowDiagram() {
 function ContractAddresses() {
   const contracts = [
     { name: "CommitStore", address: "0xdC81d28a1721fcdE86d79Ce26ba3b0bEf24C116C", description: "Stores commitments with 10-block delay" },
-    { name: "DarkPoolHook", address: "0x1846217Bae61BF26612BD8d9a64b970d525B4080", description: "Uniswap v4 hook for verification" },
-    { name: "SwapRouter", address: "0x36b42E07273CD8ECfF1125bF15771AE356F085B1", description: "Handles swap routing and settlement" },
+    { name: "DarkPoolHook", address: "0x77853497C9dEC9460fb305cbcD80C7DAF4EcDC54", description: "Uniswap v4 hook with BEFORE_SWAP flag (0x04)" },
+    { name: "SwapRouter", address: "0xB276FA545ed8848EC49b2a925c970313253B90Ba", description: "Handles swap routing and settlement (fixed delta logic)" },
     { name: "PoolManager", address: "0xE03A1074c86CFeDd5C142C4F04F1a1536e203543", description: "Uniswap v4 PoolManager (Sepolia)" },
-    { name: "USDC", address: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", description: "Test USDC token" },
-    { name: "WETH", address: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14", description: "Wrapped ETH token" },
+    { name: "USDC", address: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", description: "Test USDC token (6 decimals)" },
+    { name: "WETH", address: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14", description: "Wrapped ETH (for wrapping only)" },
   ];
   
   return (
@@ -320,6 +319,15 @@ export default function Documentation() {
                   MEV bots from frontrunning your trades.
                 </p>
                 
+                <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 mb-6">
+                  <p className="text-blue-800 text-sm font-medium mb-2">
+                    ✨ Live on Sepolia Testnet
+                  </p>
+                  <p className="text-blue-700 text-sm">
+                    Successfully tested with 10 USDC → 0.0047 ETH swap using commit-reveal privacy.
+                  </p>
+                </div>
+                
                 <h3 className="text-xl font-bold text-gray-900 mt-8 mb-4">Key Features</h3>
                 <div className="grid md:grid-cols-2 gap-6 not-prose">
                   <div className="flex items-start gap-4">
@@ -328,7 +336,7 @@ export default function Documentation() {
                     </div>
                     <div>
                       <div className="font-bold text-gray-900">Hidden Amounts</div>
-                      <div className="text-gray-600">Your trade size is encrypted using cryptographic commitments</div>
+                      <div className="text-gray-600">Your trade size is encrypted using cryptographic commitments (keccak256)</div>
                     </div>
                   </div>
                   <div className="flex items-start gap-4">
@@ -337,7 +345,7 @@ export default function Documentation() {
                     </div>
                     <div>
                       <div className="font-bold text-gray-900">MEV Protection</div>
-                      <div className="text-gray-600">10-block delay prevents sandwich attacks</div>
+                      <div className="text-gray-600">10-block delay prevents sandwich attacks and frontrunning</div>
                     </div>
                   </div>
                   <div className="flex items-start gap-4">
@@ -346,7 +354,7 @@ export default function Documentation() {
                     </div>
                     <div>
                       <div className="font-bold text-gray-900">Trustless</div>
-                      <div className="text-gray-600">Fully decentralized, no custody of funds</div>
+                      <div className="text-gray-600">Fully decentralized, no custody of funds. Self-custody only.</div>
                     </div>
                   </div>
                   <div className="flex items-start gap-4">
@@ -355,18 +363,18 @@ export default function Documentation() {
                     </div>
                     <div>
                       <div className="font-bold text-gray-900">Time-Locked</div>
-                      <div className="text-gray-600">Commitments require a delay before reveal</div>
+                      <div className="text-gray-600">Commitments require a 10-block delay before reveal</div>
                     </div>
                   </div>
                 </div>
                 
                 <h3 className="text-xl font-bold text-gray-900 mt-8 mb-4">Technology Stack</h3>
                 <ul className="space-y-2">
-                  <li><strong>Smart Contracts:</strong> Solidity 0.8.26, Foundry</li>
-                  <li><strong>DEX Infrastructure:</strong> Uniswap v4 (PoolManager, Hooks)</li>
+                  <li><strong>Smart Contracts:</strong> Solidity 0.8.26, Foundry, Uniswap v4</li>
+                  <li><strong>Pool:</strong> ETH/USDC with 0.05% fee tier (tick spacing 10)</li>
                   <li><strong>Frontend:</strong> React 18, TypeScript, Vite, Tailwind CSS</li>
                   <li><strong>Wallet Integration:</strong> Reown AppKit, Wagmi, Viem</li>
-                  <li><strong>Network:</strong> Ethereum Sepolia Testnet</li>
+                  <li><strong>Network:</strong> Ethereum Sepolia Testnet (Chain ID: 11155111)</li>
                 </ul>
               </div>
             </div>
@@ -383,28 +391,31 @@ export default function Documentation() {
                   <h3 className="font-bold text-gray-900 mb-3">CommitStore.sol</h3>
                   <p className="text-gray-600 text-sm">
                     Stores user commitments with a 10-block enforced delay. Prevents double-spending 
-                    via nullifier tracking. Only stores commitment hashes, not actual amounts.
+                    via nullifier tracking. Only stores commitment hashes, not actual amounts. 
+                    Address: <code className="text-xs bg-gray-200 px-1 rounded">0xdC81...116C</code>
                   </p>
                 </div>
                 <div className="bg-gray-50 rounded-2xl p-6">
                   <h3 className="font-bold text-gray-900 mb-3">DarkPoolHook.sol</h3>
                   <p className="text-gray-600 text-sm">
-                    Uniswap v4 hook that verifies commitments before swaps. Implements beforeSwap 
-                    hook to validate reveal parameters against stored commitments.
+                    Uniswap v4 hook with BEFORE_SWAP flag (0x04) that verifies commitments before swaps. 
+                    Deployed to address ending in 0x54 to enable the hook callback.
+                    Address: <code className="text-xs bg-gray-200 px-1 rounded">0x7785...C54</code>
                   </p>
                 </div>
                 <div className="bg-gray-50 rounded-2xl p-6">
                   <h3 className="font-bold text-gray-900 mb-3">SwapRouter.sol</h3>
                   <p className="text-gray-600 text-sm">
-                    Handles the unlock/settlement pattern required by Uniswap v4. Manages token 
-                    approvals and transfers to the PoolManager.
+                    Handles the unlock/settlement pattern required by Uniswap v4. Fixed delta logic 
+                    (sync → transfer → settle) for proper ERC20 handling.
+                    Address: <code className="text-xs bg-gray-200 px-1 rounded">0xB276...90Ba</code>
                   </p>
                 </div>
                 <div className="bg-gray-50 rounded-2xl p-6">
                   <h3 className="font-bold text-gray-900 mb-3">Frontend</h3>
                   <p className="text-gray-600 text-sm">
-                    React app that generates salts, computes commitments using keccak256, 
-                    and manages the commit-reveal flow with wallet integration.
+                    React app that generates salts client-side, computes commitments using keccak256, 
+                    and manages the commit-reveal flow with localStorage persistence.
                   </p>
                 </div>
               </div>
@@ -422,10 +433,13 @@ export default function Documentation() {
                   <Key className="w-5 h-5" />
                   Important: Save Your Salt!
                 </h3>
-                <p className="text-yellow-800">
+                <p className="text-yellow-800 mb-2">
                   The salt is generated client-side and never stored on-chain. If you lose it, 
-                  you cannot reveal your commitment and your funds will be locked. Always copy 
-                  and save the salt shown after committing.
+                  you cannot reveal your commitment and your funds will be locked.
+                </p>
+                <p className="text-yellow-700 text-sm">
+                  The salt is a large random number (e.g., <code>52555232</code>) used to compute 
+                  the commitment hash: <code>keccak256(amount, minOut, salt)</code>
                 </p>
               </div>
             </div>
@@ -438,6 +452,9 @@ export default function Documentation() {
               <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 mb-6">
                 <p className="text-blue-800 text-sm">
                   <strong>Network:</strong> Ethereum Sepolia Testnet (Chain ID: 11155111)
+                </p>
+                <p className="text-blue-700 text-sm mt-1">
+                  <strong>Pool:</strong> ETH/USDC with 0.05% fee (500 basis points), tick spacing 10
                 </p>
               </div>
               <ContractAddresses />
@@ -453,40 +470,65 @@ export default function Documentation() {
                 <div>
                   <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
                     <CheckCircle className="w-6 h-6 text-green-500" />
-                    Successful Swap: USDC → WETH
+                    Successful Live Swap: USDC → ETH
                   </h3>
                   <TxCard 
-                    title="Swap Execution"
-                    txHash="0xff4614e281d34e2a852b79eac661273aebbcfcdf93d7d897ae30a7289141ce27"
-                    description="1 USDC → WETH swap with commit-reveal. Block 10207019 → 10207029"
+                    title="Dark Pool Swap Execution"
+                    txHash="0xce5347734c3aae046cec3b6a464e1a16698ff7e65f8265bebf61e2417f4859c9"
+                    description="10 USDC → 0.004745 ETH via DarkPoolHook with commit-reveal. Block 10213675."
                     status="success"
                   />
-                </div>
-                
-                <div className="border-t border-gray-100 pt-6">
-                  <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
-                    <CheckCircle className="w-6 h-6 text-green-500" />
-                    Successful Swap: WETH → USDC
-                  </h3>
-                  <TxCard 
-                    title="Swap Execution"
-                    txHash="0x2c7bfdd28112c76c5ed34c3894b9f2d79d5a2bfa96b18f1c1c1e78176ff554c0"
-                    description="0.001 WETH → USDC swap with commit-reveal. Foundry script execution."
-                    status="success"
-                  />
-                </div>
-                
-                <div className="border-t border-gray-100 pt-6">
-                  <h3 className="text-xl font-bold text-gray-900 mb-4">Example Commitment</h3>
-                  <div className="bg-gray-900 rounded-2xl p-6 text-white font-mono text-sm overflow-x-auto">
-                    <div className="mb-2 text-gray-400">// Commitment Parameters</div>
-                    <div>amount: 1000000 <span className="text-gray-500">// 1 USDC</span></div>
-                    <div>minOut: 0 <span className="text-gray-500">// 100% slippage</span></div>
-                    <div>salt: 48208200747286979484880102624422250187739261721973404144477334400866962567443</div>
-                    <div className="mt-2 text-green-400">
-                      commitment: 0x7d8aa253229cf1f4cdeafb788c184f1ed2a147c28185c55aefe79773e515640c
+                  
+                  <div className="mt-4 bg-gray-50 rounded-2xl p-6 font-mono text-sm">
+                    <div className="grid grid-cols-2 gap-4 text-gray-700">
+                      <div>
+                        <span className="text-gray-500">Input:</span> 10 USDC
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Output:</span> 0.004745 ETH
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Rate:</span> ~2,107 USDC/ETH
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Pool Fee:</span> 0.05%
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Commit Block:</span> 10213665
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Reveal Block:</span> 10213675
+                      </div>
                     </div>
                   </div>
+                </div>
+                
+                <div className="border-t border-gray-100 pt-6">
+                  <h3 className="text-xl font-bold text-gray-900 mb-4">Example Commitment Parameters</h3>
+                  <div className="bg-gray-900 rounded-2xl p-6 text-white font-mono text-sm overflow-x-auto">
+                    <div className="mb-2 text-gray-400">// Successful Test Parameters</div>
+                    <div>amount: 10000000 <span className="text-gray-500">// 10 USDC (6 decimals)</span></div>
+                    <div>minOut: 4000000000000000 <span className="text-gray-500">// 0.004 ETH (18 decimals)</span></div>
+                    <div>salt: 52555232 <span className="text-gray-500">// Random uint256</span></div>
+                    <div className="mt-2 text-green-400 break-all">
+                      commitment: 0xa4156ce6679fbcc43833e220d1183c652030cd662021f99664e85ba03985a70c
+                    </div>
+                    <div className="mt-1 text-blue-400 break-all">
+                      nullifier: 0x4d72cc3ee2c0431cdeab5f4b7ec191f428cd6cb01b216daa37a419684638737a
+                    </div>
+                    <div className="mt-2 text-gray-500">// Pool: ETH(0)/USDC(1), zeroForOne: false</div>
+                  </div>
+                </div>
+                
+                <div className="bg-green-50 border border-green-200 rounded-2xl p-6 mt-6">
+                  <h3 className="font-bold text-green-900 mb-2">Contract Verification</h3>
+                  <ul className="space-y-2 text-sm text-green-800">
+                    <li>✓ CommitStore deployed and verified</li>
+                    <li>✓ DarkPoolHook deployed with BEFORE_SWAP flag (0x04)</li>
+                    <li>✓ SwapRouter deployed with fixed settlement logic</li>
+                    <li>✓ Pool initialized: ETH/USDC 0.05% fee, tick spacing 10</li>
+                    <li>✓ Successfully executed end-to-end swap</li>
+                  </ul>
                 </div>
               </div>
             </div>

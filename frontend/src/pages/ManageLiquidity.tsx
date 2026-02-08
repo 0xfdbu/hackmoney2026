@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract } from 'wagmi';
-import { parseUnits, formatUnits } from 'viem';
+import { useBalance, useReadContract } from 'wagmi';
+import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { parseUnits, formatUnits, keccak256, encodeAbiParameters } from 'viem'; // Add keccak256 and encodeAbiParameters
 import { 
   Plus, 
   Droplets, 
@@ -9,22 +10,66 @@ import {
   CheckCircle, 
   Loader2,
   Info,
-  Waves,
-  Terminal,
   ExternalLink,
-  Beaker
+  Beaker,
+  Copy,
+  Check,
+  Wallet,
+  ArrowRight,
+  Search
 } from 'lucide-react';
 import { 
   POOL_MANAGER_ADDRESS,
   TOKENS,
   HOOK_ADDRESS,
-  ROUTER_ADDRESS,
-  POOL_FEE,
-  POOL_TICK_SPACING
+  POSITION_MANAGER_ADDRESS,
+  PERMIT2_ADDRESS
 } from '../contracts/constants';
 
-// ABI for PoolManager initialize
+// PositionManager ABI
+const POSITION_MANAGER_ABI = [
+  {
+    inputs: [
+      {
+        components: [
+          { name: 'poolKey', type: 'tuple', components: [
+            { name: 'currency0', type: 'address' },
+            { name: 'currency1', type: 'address' },
+            { name: 'fee', type: 'uint24' },
+            { name: 'tickSpacing', type: 'int24' },
+            { name: 'hooks', type: 'address' }
+          ]},
+          { name: 'tickLower', type: 'int24' },
+          { name: 'tickUpper', type: 'int24' },
+          { name: 'salt', type: 'bytes32' }
+        ],
+        name: 'params',
+        type: 'tuple'
+      },
+      { name: 'liquidity', type: 'uint256' }
+    ],
+    name: 'mint',
+    outputs: [{ name: 'tokenId', type: 'uint256' }],
+    stateMutability: 'payable',
+    type: 'function'
+  }
+] as const;
+
+// PoolManager ABI
 const POOL_MANAGER_ABI = [
+  {
+    inputs: [{ name: 'poolId', type: 'bytes32' }],
+    name: 'getSlot0',
+    outputs: [
+      { name: 'sqrtPriceX96', type: 'uint160' },
+      { name: 'tick', type: 'int24' },
+      { name: 'protocolFee', type: 'uint24' },
+      { name: 'hookFee', type: 'uint24' },
+      { name: 'liquidity', type: 'uint128' }
+    ],
+    stateMutability: 'view',
+    type: 'function'
+  },
   {
     inputs: [
       {
@@ -38,635 +83,819 @@ const POOL_MANAGER_ABI = [
         name: 'key',
         type: 'tuple'
       },
-      { name: 'sqrtPriceX96', type: 'uint160' }
+      { name: 'sqrtPriceX96', type: 'uint160' },
+      { name: 'hookData', type: 'bytes' }
     ],
     name: 'initialize',
-    outputs: [{ name: 'tick', type: 'int24' }],
+    outputs: [],
     stateMutability: 'nonpayable',
-    type: 'function'
-  },
-  {
-    inputs: [{ name: 'id', type: 'bytes32' }],
-    name: 'getSlot0',
-    outputs: [
-      { name: 'sqrtPriceX96', type: 'uint160' },
-      { name: 'tick', type: 'int24' },
-      { name: 'protocolFee', type: 'uint24' },
-      { name: 'lpFee', type: 'uint24' }
-    ],
-    stateMutability: 'view',
     type: 'function'
   }
 ] as const;
 
-// ABI for ERC20 approve
-const ERC20_ABI = [
+const PERMIT2_ABI = [
   {
     inputs: [
+      { name: 'token', type: 'address' },
       { name: 'spender', type: 'address' },
-      { name: 'amount', type: 'uint256' }
+      { name: 'amount', type: 'uint160' },
+      { name: 'expiration', type: 'uint48' }
     ],
     name: 'approve',
-    outputs: [{ name: '', type: 'bool' }],
+    outputs: [],
     stateMutability: 'nonpayable',
-    type: 'function'
-  },
-  {
-    inputs: [
-      { name: 'owner', type: 'address' },
-      { name: 'spender', type: 'address' }
-    ],
-    name: 'allowance',
-    outputs: [{ name: '', type: 'uint256' }],
-    stateMutability: 'view',
     type: 'function'
   }
 ] as const;
 
-// Fee tiers
+const TOKEN_INFO: Record<string, { symbol: string; name: string; icon: string; decimals: number }> = {
+  ETH: {
+    symbol: 'ETH',
+    name: 'Ethereum',
+    icon: 'https://cryptologos.cc/logos/ethereum-eth-logo.png',
+    decimals: 18,
+  },
+  USDC: {
+    symbol: 'USDC',
+    name: 'USD Coin',
+    icon: 'https://cryptologos.cc/logos/usd-coin-usdc-logo.png',
+    decimals: 6,
+  },
+};
+
 const FEE_TIERS = [
-  { value: 100, label: '0.01%', tickSpacing: 1 },
-  { value: 500, label: '0.05%', tickSpacing: 10 },
-  { value: 3000, label: '0.3%', tickSpacing: 60 },
-  { value: 10000, label: '1%', tickSpacing: 200 },
+  { fee: 100, label: '0.01%', description: 'Stable pairs', ticks: 1 },
+  { fee: 500, label: '0.05%', description: 'Blue chips', ticks: 10 },
+  { fee: 3000, label: '0.3%', description: 'Most pairs', ticks: 60 },
+  { fee: 10000, label: '1%', description: 'Exotic pairs', ticks: 200 },
 ];
 
-// CLI Commands for adding liquidity
-const CLI_COMMANDS = `cd contracts/
-source .env
+// Helper to convert sqrtPriceX96 to price
+const sqrtPriceX96ToPrice = (sqrtPriceX96: bigint): number => {
+  const Q96 = 2n ** 96n;
+  const price = Number(sqrtPriceX96) / Number(Q96);
+  return price * price;
+};
 
-# Add Liquidity to Pool
-forge script script/AddLiquidity.s.sol \\
-  --rpc-url $SEPOLIA_RPC_URL \\
-  --broadcast \\
-  -vv
-
-# Pool Parameters:
-# • USDC: 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238
-# • WETH: 0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14
-# • Hook: 0x1846217Bae61BF26612BD8d9a64b970d525B4080
-# • Fee: 3000 (0.3%)
-# • Tick Spacing: 60`;
+// Helper to convert price to tick
+const priceToTick = (price: number): number => {
+  return Math.floor(Math.log(price) / Math.log(1.0001));
+};
 
 export default function ManageLiquidity() {
   const { address, isConnected } = useAccount();
-  const [activeTab, setActiveTab] = useState<'initialize' | 'addLiquidity'>('initialize');
   
-  // Initialize pool state
-  const [feeTier, setFeeTier] = useState(POOL_FEE); // 500 = 0.05% (new pool)
-  const [initialPrice, setInitialPrice] = useState('1');
-  const [isPoolInitialized, setIsPoolInitialized] = useState(false);
+  // Flow state: 'select-fee' -> 'check' -> 'initialize' -> 'range' -> 'deposit'
+  const [step, setStep] = useState<'select-fee' | 'check' | 'initialize' | 'range' | 'deposit'>('select-fee');
+  const [selectedFee, setSelectedFee] = useState<number | null>(null);
+  const [selectedTickSpacing, setSelectedTickSpacing] = useState(10);
+  const [poolExists, setPoolExists] = useState(false);
+  const [currentPrice, setCurrentPrice] = useState<number>(0);
+  const [currentTick, setCurrentTick] = useState<number>(0);
   
-  // Add liquidity state
-  const [usdcAmount, setUsdcAmount] = useState('');
-  const [wethAmount, setWethAmount] = useState('');
-  const [tickLower, setTickLower] = useState('-60000');
-  const [tickUpper, setTickUpper] = useState('60000');
+  // Price range state
+  const [minPrice, setMinPrice] = useState('');
+  const [maxPrice, setMaxPrice] = useState('');
+  const [tickLower, setTickLower] = useState<number>(0);
+  const [tickUpper, setTickUpper] = useState<number>(0);
+  const [fullRange, setFullRange] = useState(false);
   
-  // Transaction states
+  // Deposit amounts
+  const [usdcAmount, setUsdcAmount] = useState('100');
+  const [ethAmount, setEthAmount] = useState('0.05');
+  
+  // UI state
+  const [showSettings, setShowSettings] = useState(false);
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
-  const [txStatus, setTxStatus] = useState<'idle' | 'pending' | 'success' | 'error'>('idle');
+  const [txStatus, setTxStatus] = useState<'idle' | 'checking' | 'initializing' | 'approving' | 'pending' | 'success' | 'error'>('idle');
   const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
 
   const { writeContract, isPending } = useWriteContract();
-  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
-    hash: txHash,
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash: txHash });
+
+  const { data: ethBalance } = useBalance({ address });
+  const { data: usdcBalance } = useBalance({
+    address,
+    token: TOKENS.USDC.address as `0x${string}`
   });
 
+  // Calculate pool ID using viem
+  const getPoolId = (fee: number, tickSpacing: number): `0x${string}` => {
+    const poolKey = {
+      currency0: TOKENS.ETH.address,
+      currency1: TOKENS.USDC.address,
+      fee: fee,
+      tickSpacing: tickSpacing,
+      hooks: HOOK_ADDRESS,
+    };
+
+    // Encode the pool key tuple: (address, address, uint24, int24, address)
+    const encoded = encodeAbiParameters(
+      [
+        { type: 'address', name: 'currency0' },
+        { type: 'address', name: 'currency1' },
+        { type: 'uint24', name: 'fee' },
+        { type: 'int24', name: 'tickSpacing' },
+        { type: 'address', name: 'hooks' }
+      ],
+      [poolKey.currency0, poolKey.currency1, poolKey.fee, poolKey.tickSpacing, poolKey.hooks]
+    );
+
+    return keccak256(encoded);
+  };
+
   // Check if pool exists
-  const { data: slot0 } = useReadContract({
+  const { data: slot0, refetch: refetchPool } = useReadContract({
     address: POOL_MANAGER_ADDRESS as `0x${string}`,
     abi: POOL_MANAGER_ABI,
     functionName: 'getSlot0',
-    args: [getPoolId()],
+    args: selectedFee !== null && selectedTickSpacing !== null ? [getPoolId(selectedFee, selectedTickSpacing)] : undefined,
     query: {
-      enabled: true,
+      enabled: step === 'check' && selectedFee !== null,
     }
   });
 
   useEffect(() => {
-    if (slot0 && slot0[0] !== 0n) {
-      setIsPoolInitialized(true);
+    if (step === 'check' && slot0 !== undefined) {
+      if (slot0[0] !== 0n) {
+        setPoolExists(true);
+        const price = sqrtPriceX96ToPrice(slot0[0]);
+        setCurrentPrice(price);
+        setCurrentTick(Number(slot0[1]));
+        
+        // Set default range around current price (+/- 10%)
+        const defaultMin = (price * 0.9).toFixed(6);
+        const defaultMax = (price * 1.1).toFixed(6);
+        setMinPrice(defaultMin);
+        setMaxPrice(defaultMax);
+        updateTicks(defaultMin, defaultMax, false);
+        
+        setStep('range');
+      } else {
+        setPoolExists(false);
+        setStep('initialize');
+      }
+      setTxStatus('idle');
     }
-  }, [slot0]);
+  }, [slot0, step]);
 
-  function getPoolId() {
-    return '0x0000000000000000000000000000000000000000000000000000000000000000' as `0x${string}`;
-  }
+  useEffect(() => {
+    if (isSuccess && txHash) {
+      if (txStatus === 'initializing') {
+        setPoolExists(true);
+        setStep('range');
+        refetchPool();
+      } else {
+        setTxStatus('success');
+      }
+    }
+  }, [isSuccess, txHash, txStatus, refetchPool]);
 
-  function calculateSqrtPriceX96(price: string): bigint {
-    const priceNum = parseFloat(price);
-    const sqrtPrice = Math.sqrt(priceNum);
-    const Q96 = 2 ** 96;
-    return BigInt(Math.floor(sqrtPrice * Q96));
-  }
-
-  const handleInitializePool = async () => {
-    if (!isConnected || !address) {
-      setError('Please connect your wallet');
+  const updateTicks = (min: string, max: string, isFullRange: boolean) => {
+    if (isFullRange) {
+      setTickLower(-887272);
+      setTickUpper(887272);
       return;
     }
+    if (min) {
+      const tick = priceToTick(parseFloat(min));
+      setTickLower(Math.floor(tick / selectedTickSpacing) * selectedTickSpacing);
+    }
+    if (max) {
+      const tick = priceToTick(parseFloat(max));
+      setTickUpper(Math.floor(tick / selectedTickSpacing) * selectedTickSpacing);
+    }
+  };
 
+  const handleSelectFee = (fee: number, tickSpacing: number) => {
+    setSelectedFee(fee);
+    setSelectedTickSpacing(tickSpacing);
+  };
+
+  const handleCheckPool = () => {
+    if (selectedFee === null) return;
+    setStep('check');
+    setTxStatus('checking');
+    // Force refetch with the new pool ID
+    refetchPool();
+  };
+
+  const handleInitializePool = async () => {
+    if (!isConnected || selectedFee === null) return;
+    setTxStatus('initializing');
     setError('');
-    setTxStatus('pending');
 
     try {
-      const tickSpacing = FEE_TIERS.find(t => t.value === feeTier)?.tickSpacing || 60;
-      const sqrtPriceX96 = calculateSqrtPriceX96(initialPrice);
+      const poolKey = {
+        currency0: TOKENS.ETH.address,
+        currency1: TOKENS.USDC.address,
+        fee: selectedFee,
+        tickSpacing: selectedTickSpacing,
+        hooks: HOOK_ADDRESS,
+      };
+
+      // Starting price: 1 ETH = 2000 USDC
+      // sqrt(2000) * 2^96 = 79228162514264337593543950336000000
+      const startingPrice = BigInt('79228162514264337593543950336000000');
 
       writeContract({
         address: POOL_MANAGER_ADDRESS as `0x${string}`,
         abi: POOL_MANAGER_ABI,
         functionName: 'initialize',
-        args: [
-          {
-            currency0: TOKENS.USDC.address,
-            currency1: TOKENS.WETH.address,
-            fee: feeTier,
-            tickSpacing: tickSpacing,
-            hooks: HOOK_ADDRESS,
-          },
-          sqrtPriceX96,
-        ],
+        args: [poolKey, startingPrice, '0x'],
       }, {
         onSuccess: (hash) => {
           setTxHash(hash);
-          setTxStatus('success');
         },
-        onError: (err) => {
-          setError(err.message || 'Transaction failed');
-          setTxStatus('error');
+        onError: (err: any) => {
+          // If pool already exists, just move to range step
+          if (err.message?.includes('AlreadyInitialized') || err.message?.includes('pool already exists')) {
+            setPoolExists(true);
+            setStep('range');
+          } else {
+            setError('Failed to initialize pool: ' + err.message);
+            setTxStatus('error');
+          }
         }
       });
     } catch (err: any) {
-      setError(err.message || 'Failed to initialize pool');
+      setError(err.message);
       setTxStatus('error');
     }
   };
 
-  const handleApproveAndAddLiquidity = async () => {
+  const handleAddLiquidity = async () => {
     if (!isConnected || !address) {
       setError('Please connect your wallet');
       return;
     }
 
-    if (!usdcAmount || !wethAmount) {
-      setError('Please enter both token amounts');
+    if (!usdcAmount || !ethAmount || parseFloat(usdcAmount) <= 0 || parseFloat(ethAmount) <= 0) {
+      setError('Please enter valid amounts');
       return;
     }
 
     setError('');
-    setTxStatus('pending');
-    setError('Note: Full liquidity addition requires PositionManager integration. This is a simplified UI.');
-    setTxStatus('error');
+    setTxStatus('approving');
+
+    try {
+      writeContract({
+        address: TOKENS.USDC.address as `0x${string}`,
+        abi: [
+          {
+            inputs: [{ name: 'spender', type: 'address' }, { name: 'amount', type: 'uint256' }],
+            name: 'approve',
+            outputs: [{ name: '', type: 'bool' }],
+            stateMutability: 'nonpayable',
+            type: 'function'
+          }
+        ],
+        functionName: 'approve',
+        args: [PERMIT2_ADDRESS, parseUnits(usdcAmount, 6)],
+      }, {
+        onSuccess: () => {
+          writeContract({
+            address: PERMIT2_ADDRESS as `0x${string}`,
+            abi: PERMIT2_ABI,
+            functionName: 'approve',
+            args: [
+              TOKENS.USDC.address,
+              POSITION_MANAGER_ADDRESS,
+              parseUnits(usdcAmount, 6),
+              Math.floor(Date.now() / 1000) + 3600
+            ],
+          }, {
+            onSuccess: () => {
+              mintLiquidity();
+            },
+            onError: (err: any) => {
+              setError('Permit2 approval failed: ' + err.message);
+              setTxStatus('error');
+            }
+          });
+        },
+        onError: (err: any) => {
+          setError('USDC approval failed: ' + err.message);
+          setTxStatus('error');
+        }
+      });
+    } catch (err: any) {
+      setError(err.message || 'Transaction failed');
+      setTxStatus('error');
+    }
   };
 
-  const copyCommands = () => {
-    navigator.clipboard.writeText(CLI_COMMANDS);
-    alert('Commands copied to clipboard!');
+  const mintLiquidity = () => {
+    setTxStatus('pending');
+    
+    const usdc = parseUnits(usdcAmount, 6);
+    const eth = parseUnits(ethAmount, 18);
+    const liquidity = (usdc * eth) / 10n**6n;
+    
+    const poolKey = {
+      currency0: TOKENS.ETH.address,
+      currency1: TOKENS.USDC.address,
+      fee: selectedFee!,
+      tickSpacing: selectedTickSpacing,
+      hooks: HOOK_ADDRESS,
+    };
+
+    const mintParams = {
+      poolKey,
+      tickLower,
+      tickUpper,
+      salt: '0x0000000000000000000000000000000000000000000000000000000000000000' as `0x${string}`,
+    };
+
+    writeContract({
+      address: POSITION_MANAGER_ADDRESS as `0x${string}`,
+      abi: POSITION_MANAGER_ABI,
+      functionName: 'mint',
+      args: [mintParams, liquidity],
+      value: parseUnits(ethAmount, 18),
+    }, {
+      onSuccess: (hash) => {
+        setTxHash(hash);
+      },
+      onError: (err: any) => {
+        setError('Mint failed: ' + err.message);
+        setTxStatus('error');
+      }
+    });
+  };
+
+  const copyPoolInfo = () => {
+    const info = `Pool: ETH/USDC
+Fee: ${selectedFee ? selectedFee / 10000 : 0.05}%
+Hook: ${HOOK_ADDRESS}`;
+    navigator.clipboard.writeText(info);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2002);
+  };
+
+  const setMaxBalance = (token: 'ETH' | 'USDC') => {
+    if (token === 'ETH' && ethBalance) {
+      const maxAmount = parseFloat(formatUnits(ethBalance.value, 18)) - 0.01;
+      if (maxAmount > 0) setEthAmount(maxAmount.toFixed(6));
+    } else if (token === 'USDC' && usdcBalance) {
+      setUsdcAmount(formatUnits(usdcBalance.value, 6));
+    }
+  };
+
+  const handleMinPriceChange = (val: string) => {
+    setMinPrice(val);
+    if (!fullRange) updateTicks(val, maxPrice, fullRange);
+  };
+
+  const handleMaxPriceChange = (val: string) => {
+    setMaxPrice(val);
+    if (!fullRange) updateTicks(minPrice, val, fullRange);
+  };
+
+  const toggleFullRange = () => {
+    const newFullRange = !fullRange;
+    setFullRange(newFullRange);
+    if (newFullRange) {
+      setTickLower(-887272);
+      setTickUpper(887272);
+    } else {
+      updateTicks(minPrice, maxPrice, false);
+    }
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-pink-50 via-white to-blue-50 pt-24 pb-16 px-4">
-      <div className="max-w-6xl mx-auto">
+    <div className="min-h-screen px-4 py-8">
+      <div className="max-w-xl mx-auto">
         {/* Header */}
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center gap-2 px-4 py-2 bg-blue-100 rounded-full text-blue-700 text-sm font-medium mb-4">
-            <Waves className="w-4 h-4" />
-            <span>Pool Management</span>
+        <div className="flex justify-between items-center mb-6 px-2">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-800">Add Liquidity</h1>
+            <p className="text-sm text-gray-500 mt-1">
+              {step === 'select-fee' && 'Choose a fee tier'}
+              {step === 'check' && 'Checking pool status...'}
+              {step === 'initialize' && 'Pool needs initialization'}
+              {step === 'range' && 'Set your price range'}
+              {step === 'deposit' && 'Enter deposit amounts'}
+            </p>
           </div>
-          <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-2">
-            Manage Liquidity
-          </h1>
-          <p className="text-gray-600">
-            Initialize pools and add liquidity to the dark pool
-          </p>
+          <button
+            onClick={() => setShowSettings(!showSettings)}
+            className="p-3 rounded-2xl bg-white shadow-sm border border-gray-200 text-gray-600 hover:text-gray-800 hover:shadow-md transition-all"
+          >
+            <Settings className="w-5 h-5" />
+          </button>
         </div>
 
-        {/* Not Fully Operational Banner */}
-        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 mb-6">
-          <div className="flex items-start gap-4">
-            <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center shrink-0">
-              <Beaker className="w-5 h-5 text-amber-600" />
-            </div>
-            <div className="flex-1">
-              <h3 className="font-semibold text-amber-800 mb-1">
-                Liquidity UI is Not Fully Operational
-              </h3>
-              <p className="text-amber-700 text-sm mb-3">
-                The liquidity management UI is currently in beta and requires PositionManager integration. 
-                For now, please use one of the alternatives below to add liquidity.
-              </p>
-              <div className="flex flex-wrap gap-3">
-                <a
-                  href="https://app.uniswap.org/positions/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-pink-500 hover:bg-pink-600 text-white rounded-xl font-medium text-sm transition-colors"
-                >
-                  <ExternalLink className="w-4 h-4" />
-                  Use Uniswap UI
-                </a>
-                <a
-                  href="#cli-commands"
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-amber-100 hover:bg-amber-200 text-amber-700 rounded-xl font-medium text-sm transition-colors"
-                >
-                  <Terminal className="w-4 h-4" />
-                  Use CLI Commands
-                </a>
+        {/* Progress Steps */}
+        <div className="flex items-center justify-between mb-6 px-2">
+          {['Fee', 'Pool', 'Range', 'Deposit'].map((label, idx) => {
+            const stepNum = idx + 1;
+            let currentStepNum = 1;
+            if (step === 'select-fee') currentStepNum = 1;
+            else if (step === 'check' || step === 'initialize') currentStepNum = 2;
+            else if (step === 'range') currentStepNum = 3;
+            else if (step === 'deposit') currentStepNum = 4;
+            
+            const isActive = stepNum === currentStepNum;
+            const isCompleted = stepNum < currentStepNum;
+            
+            return (
+              <div key={label} className="flex items-center">
+                <div className={`flex items-center justify-center w-8 h-8 rounded-full text-sm font-bold ${
+                  isActive ? 'bg-pink-500 text-white' :
+                  isCompleted ? 'bg-green-500 text-white' :
+                  'bg-gray-200 text-gray-500'
+                }`}>
+                  {isCompleted ? <CheckCircle className="w-5 h-5" /> : stepNum}
+                </div>
+                <span className={`ml-2 text-sm font-medium hidden sm:block ${
+                  isActive ? 'text-pink-600' : isCompleted ? 'text-green-600' : 'text-gray-400'
+                }`}>
+                  {label}
+                </span>
+                {idx < 3 && (
+                  <div className={`w-6 sm:w-8 h-0.5 mx-2 ${
+                    isCompleted ? 'bg-green-500' : 'bg-gray-200'
+                  }`} />
+                )}
               </div>
+            );
+          })}
+        </div>
+
+        {/* Warning */}
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4 shadow-sm">
+          <div className="flex items-start gap-3">
+            <Beaker className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
+            <div className="flex-1">
+              <h3 className="font-semibold text-amber-800 text-sm mb-1">
+                Experimental Feature
+              </h3>
+              <p className="text-amber-700 text-xs mb-2">
+                This is not MEV protected! Use{' '}
+                <a href="https://app.uniswap.org/positions" target="_blank" rel="noopener noreferrer" className="text-pink-600 underline font-medium">
+                  Uniswap UI
+                </a>{' '}
+                for better experience.
+              </p>
+              <button onClick={copyPoolInfo} className="text-xs bg-white px-3 py-1.5 rounded-lg border border-amber-200 hover:bg-amber-50 transition-colors flex items-center gap-1 text-amber-800">
+                {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                {copied ? 'Copied!' : 'Copy Pool Info'}
+              </button>
             </div>
           </div>
         </div>
 
-        {/* Status Card */}
-        <div className={`rounded-2xl p-4 mb-6 flex items-center gap-3 ${
-          isPoolInitialized ? 'bg-green-50 border border-green-200' : 'bg-yellow-50 border border-yellow-200'
-        }`}>
-          {isPoolInitialized ? (
-            <>
-              <CheckCircle className="w-5 h-5 text-green-600" />
-              <span className="text-green-800 font-medium">Pool is initialized and ready for liquidity</span>
-            </>
-          ) : (
-            <>
-              <AlertCircle className="w-5 h-5 text-yellow-600" />
-              <span className="text-yellow-800 font-medium">Pool needs to be initialized first</span>
-            </>
-          )}
-        </div>
+        {/* Main Content Card */}
+        <div className="bg-white rounded-3xl p-6 shadow-xl border border-gray-100">
+          
+          {/* STEP 1: Select Fee Tier - 2x2 Grid */}
+          {step === 'select-fee' && (
+            <div className="space-y-6">
+              <div className="text-center py-4">
+                <div className="w-16 h-16 bg-pink-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <Settings className="w-8 h-8 text-pink-500" />
+                </div>
+                <h3 className="text-xl font-bold text-gray-800 mb-2">Select Fee Tier</h3>
+                <p className="text-gray-500 text-sm mb-6">
+                  Choose the fee tier for your liquidity position
+                </p>
+              </div>
 
-        {/* Two Column Layout */}
-        <div className="grid lg:grid-cols-2 gap-6">
-          {/* Left Column - Current UI */}
-          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden">
-            {/* Tabs */}
-            <div className="flex border-b border-gray-100">
+              <div className="grid grid-cols-2 gap-3">
+                {FEE_TIERS.map((tier) => (
+                  <button
+                    key={tier.fee}
+                    onClick={() => handleSelectFee(tier.fee, tier.ticks)}
+                    className={`relative p-4 rounded-2xl border-2 text-left transition-all ${
+                      selectedFee === tier.fee
+                        ? 'border-pink-500 bg-pink-50 shadow-md'
+                        : 'border-gray-200 hover:border-pink-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    <div className={`font-bold text-xl mb-1 ${selectedFee === tier.fee ? 'text-pink-700' : 'text-gray-800'}`}>
+                      {tier.label}
+                    </div>
+                    <div className="text-xs text-gray-500 leading-tight">{tier.description}</div>
+                    
+                    {selectedFee === tier.fee && (
+                      <div className="absolute top-2 right-2 w-5 h-5 bg-pink-500 rounded-full flex items-center justify-center">
+                        <Check className="w-3 h-3 text-white" />
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+
               <button
-                onClick={() => setActiveTab('initialize')}
-                className={`flex-1 flex items-center justify-center gap-2 px-6 py-4 font-medium transition-colors ${
-                  activeTab === 'initialize'
-                    ? 'bg-pink-50 text-pink-700 border-b-2 border-pink-500'
-                    : 'text-gray-600 hover:bg-gray-50'
-                }`}
+                onClick={handleCheckPool}
+                disabled={selectedFee === null || txStatus === 'checking'}
+                className="w-full py-4 bg-gradient-to-r from-pink-500 to-purple-600 text-white rounded-2xl font-bold text-lg shadow-lg shadow-pink-500/25 hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
-                <Settings className="w-4 h-4" />
-                Initialize Pool
-              </button>
-              <button
-                onClick={() => setActiveTab('addLiquidity')}
-                className={`flex-1 flex items-center justify-center gap-2 px-6 py-4 font-medium transition-colors ${
-                  activeTab === 'addLiquidity'
-                    ? 'bg-pink-50 text-pink-700 border-b-2 border-pink-500'
-                    : 'text-gray-600 hover:bg-gray-50'
-                }`}
-              >
-                <Plus className="w-4 h-4" />
-                Add Liquidity
+                {txStatus === 'checking' ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    Checking Pool...
+                  </>
+                ) : (
+                  <>
+                    <Search className="w-5 h-5" />
+                    Check Pool Status
+                  </>
+                )}
               </button>
             </div>
+          )}
 
-            <div className="p-6">
-              {/* Initialize Pool Tab */}
-              {activeTab === 'initialize' && (
-                <div className="space-y-6">
-                  <div className="bg-blue-50 rounded-xl p-4 border border-blue-100">
-                    <div className="flex items-start gap-3">
-                      <Info className="w-5 h-5 text-blue-600 mt-0.5" />
-                      <div className="text-sm text-blue-800">
-                        <p className="font-medium mb-1">What is pool initialization?</p>
-                        <p>Initializing creates the pool with an initial price ratio. This only needs to be done once per pool configuration.</p>
-                      </div>
-                    </div>
+          {/* STEP 2: Check/Initialize Pool */}
+          {(step === 'check' || step === 'initialize') && (
+            <div className="space-y-6">
+              <div className="text-center py-8">
+                <div className="w-16 h-16 bg-pink-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  {step === 'check' ? <Loader2 className="w-8 h-8 text-pink-500 animate-spin" /> : <Droplets className="w-8 h-8 text-pink-500" />}
+                </div>
+                <h3 className="text-xl font-bold text-gray-800 mb-2">
+                  {step === 'check' ? 'Checking Pool...' : 'Pool Not Initialized'}
+                </h3>
+                <p className="text-gray-500 text-sm mb-2">
+                  Fee Tier: <span className="font-semibold text-pink-600">{selectedFee ? FEE_TIERS.find(f => f.fee === selectedFee)?.label : ''}</span>
+                </p>
+                {step === 'initialize' && (
+                  <p className="text-gray-500 text-sm">
+                    Pool ID: {selectedFee ? getPoolId(selectedFee, selectedTickSpacing).slice(0, 10) : ''}...
+                  </p>
+                )}
+              </div>
+
+              {step === 'initialize' && (
+                <div className="space-y-4">
+                  <div className="bg-blue-50 rounded-xl p-4 text-sm text-blue-800">
+                    <p className="font-semibold mb-1">Starting Price</p>
+                    <p className="text-blue-600">The pool will be initialized at 1 ETH = 2000 USDC</p>
                   </div>
-
-                  {/* Fee Tier Selection */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-3">
-                      Fee Tier
-                    </label>
-                    <div className="grid grid-cols-2 gap-3">
-                      {FEE_TIERS.map((tier) => (
-                        <button
-                          key={tier.value}
-                          onClick={() => setFeeTier(tier.value)}
-                          className={`p-4 rounded-xl border-2 transition-all ${
-                            feeTier === tier.value
-                              ? 'border-pink-500 bg-pink-50'
-                              : 'border-gray-200 hover:border-gray-300'
-                          }`}
-                        >
-                          <div className="font-bold text-gray-900">{tier.label}</div>
-                          <div className="text-xs text-gray-500">Tick spacing: {tier.tickSpacing}</div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Initial Price */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Initial Price (WETH per USDC)
-                    </label>
-                    <input
-                      type="number"
-                      value={initialPrice}
-                      onChange={(e) => setInitialPrice(e.target.value)}
-                      placeholder="1.0"
-                      className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-pink-500 focus:ring-2 focus:ring-pink-200 outline-none transition-all"
-                    />
-                    <p className="text-xs text-gray-500 mt-1">
-                      This sets the initial exchange rate between USDC and WETH
-                    </p>
-                  </div>
-
-                  {/* Pool Configuration Summary */}
-                  <div className="bg-gray-50 rounded-xl p-4">
-                    <h4 className="font-medium text-gray-900 mb-3">Pool Configuration</h4>
-                    <div className="space-y-2 text-sm">
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Token 0</span>
-                        <span className="font-mono">{TOKENS.USDC.address.slice(0, 6)}...{TOKENS.USDC.address.slice(-4)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Token 1</span>
-                        <span className="font-mono">{TOKENS.WETH.address.slice(0, 6)}...{TOKENS.WETH.address.slice(-4)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Fee</span>
-                        <span>{feeTier / 10000}%</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Hook</span>
-                        <span className="font-mono">{HOOK_ADDRESS.slice(0, 6)}...{HOOK_ADDRESS.slice(-4)}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {error && (
-                    <div className="bg-red-50 text-red-700 rounded-xl p-4 text-sm">
-                      {error}
-                    </div>
-                  )}
 
                   <button
                     onClick={handleInitializePool}
-                    disabled={!isConnected || isPending || isConfirming}
-                    className="w-full py-4 bg-gradient-to-r from-pink-500 to-purple-600 text-white rounded-2xl font-semibold shadow-lg shadow-pink-500/25 hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    disabled={!isConnected || isPending}
+                    className="w-full py-4 bg-gradient-to-r from-pink-500 to-purple-600 text-white rounded-2xl font-bold text-lg shadow-lg shadow-pink-500/25 hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {isPending || isConfirming ? (
-                      <>
+                    {isPending ? (
+                      <span className="flex items-center justify-center gap-2">
                         <Loader2 className="w-5 h-5 animate-spin" />
-                        {isConfirming ? 'Confirming...' : 'Initializing...'}
-                      </>
+                        Initializing...
+                      </span>
                     ) : (
-                      <>
-                        <Settings className="w-5 h-5" />
-                        Initialize Pool
-                      </>
+                      'Initialize Pool'
                     )}
                   </button>
-                </div>
-              )}
-
-              {/* Add Liquidity Tab */}
-              {activeTab === 'addLiquidity' && (
-                <div className="space-y-6">
-                  {!isPoolInitialized && (
-                    <div className="bg-yellow-50 rounded-xl p-4 border border-yellow-200">
-                      <div className="flex items-start gap-3">
-                        <AlertCircle className="w-5 h-5 text-yellow-600 mt-0.5" />
-                        <div className="text-sm text-yellow-800">
-                          <p className="font-medium">Pool not initialized</p>
-                          <p>You need to initialize the pool before adding liquidity.</p>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="bg-blue-50 rounded-xl p-4 border border-blue-100">
-                    <div className="flex items-start gap-3">
-                      <Info className="w-5 h-5 text-blue-600 mt-0.5" />
-                      <div className="text-sm text-blue-800">
-                        <p className="font-medium mb-1">Note on Liquidity Addition</p>
-                        <p>This UI demonstrates the liquidity addition flow. Full implementation requires integration with the Uniswap v4 PositionManager contract.</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Token Amounts */}
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        USDC Amount
-                      </label>
-                      <div className="relative">
-                        <input
-                          type="number"
-                          value={usdcAmount}
-                          onChange={(e) => setUsdcAmount(e.target.value)}
-                          placeholder="0.00"
-                          className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-pink-500 focus:ring-2 focus:ring-pink-200 outline-none transition-all"
-                        />
-                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 font-medium">
-                          USDC
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="flex justify-center">
-                      <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center">
-                        <Plus className="w-5 h-5 text-gray-400" />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        WETH Amount
-                      </label>
-                      <div className="relative">
-                        <input
-                          type="number"
-                          value={wethAmount}
-                          onChange={(e) => setWethAmount(e.target.value)}
-                          placeholder="0.00"
-                          className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-pink-500 focus:ring-2 focus:ring-pink-200 outline-none transition-all"
-                        />
-                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 font-medium">
-                          WETH
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Price Range */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-3">
-                      Price Range (Ticks)
-                    </label>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="text-xs text-gray-500 mb-1 block">Min Price</label>
-                        <input
-                          type="number"
-                          value={tickLower}
-                          onChange={(e) => setTickLower(e.target.value)}
-                          className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-pink-500 focus:ring-2 focus:ring-pink-200 outline-none transition-all"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-xs text-gray-500 mb-1 block">Max Price</label>
-                        <input
-                          type="number"
-                          value={tickUpper}
-                          onChange={(e) => setTickUpper(e.target.value)}
-                          className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-pink-500 focus:ring-2 focus:ring-ping-200 outline-none transition-all"
-                        />
-                      </div>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-2">
-                      Full range: -887272 to 887272. Narrower ranges = higher fees but more IL risk.
-                    </p>
-                  </div>
-
-                  {error && (
-                    <div className="bg-red-50 text-red-700 rounded-xl p-4 text-sm">
-                      {error}
-                    </div>
-                  )}
-
+                  
                   <button
-                    onClick={handleApproveAndAddLiquidity}
-                    disabled={!isConnected || !isPoolInitialized}
-                    className="w-full py-4 bg-gradient-to-r from-pink-500 to-purple-600 text-white rounded-2xl font-semibold shadow-lg shadow-pink-500/25 hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    onClick={() => setStep('select-fee')}
+                    className="w-full py-3 text-gray-500 font-medium hover:text-gray-700 transition-colors"
                   >
-                    <Droplets className="w-5 h-5" />
-                    Add Liquidity
+                    ← Back to Fee Selection
                   </button>
                 </div>
               )}
             </div>
-          </div>
+          )}
 
-          {/* Right Column - CLI Commands */}
-          <div id="cli-commands" className="space-y-6">
-            {/* CLI Commands Card */}
-            <div className="bg-gray-900 rounded-2xl shadow-lg overflow-hidden">
-              <div className="flex items-center justify-between px-6 py-4 bg-gray-800 border-b border-gray-700">
-                <div className="flex items-center gap-3">
-                  <Terminal className="w-5 h-5 text-green-400" />
-                  <span className="font-semibold text-gray-100">CLI Commands</span>
+          {/* STEP 3: Price Range */}
+          {step === 'range' && (
+            <div className="space-y-6">
+              <div className="bg-gray-50 rounded-2xl p-4 text-center">
+                <div className="text-sm text-gray-500 mb-1">Current Price</div>
+                <div className="text-3xl font-bold text-gray-800">
+                  {currentPrice ? currentPrice.toFixed(4) : '--'}
                 </div>
+                <div className="text-sm text-gray-500 mt-1">ETH per USDC</div>
+                <div className="text-xs text-pink-600 mt-2 font-medium">
+                  Fee: {FEE_TIERS.find(f => f.fee === selectedFee)?.label}
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-semibold text-gray-700">Price Range</label>
+                  <button
+                    onClick={toggleFullRange}
+                    className={`text-xs px-3 py-1 rounded-full transition-colors ${
+                      fullRange 
+                        ? 'bg-pink-100 text-pink-700' 
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    }`}
+                  >
+                    {fullRange ? 'Full Range ✓' : 'Full Range'}
+                  </button>
+                </div>
+
+                {!fullRange ? (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-gray-50 rounded-2xl p-4 border-2 border-transparent focus-within:border-pink-500 transition-colors">
+                      <label className="text-xs text-gray-500 font-medium mb-1 block">Min Price</label>
+                      <input
+                        type="number"
+                        value={minPrice}
+                        onChange={(e) => handleMinPriceChange(e.target.value)}
+                        placeholder="0.00"
+                        step="0.0001"
+                        className="w-full bg-transparent text-2xl font-bold text-gray-800 outline-none"
+                      />
+                      <div className="text-xs text-gray-400 mt-1">ETH/USDC</div>
+                    </div>
+                    <div className="bg-gray-50 rounded-2xl p-4 border-2 border-transparent focus-within:border-pink-500 transition-colors">
+                      <label className="text-xs text-gray-500 font-medium mb-1 block">Max Price</label>
+                      <input
+                        type="number"
+                        value={maxPrice}
+                        onChange={(e) => handleMaxPriceChange(e.target.value)}
+                        placeholder="0.00"
+                        step="0.0001"
+                        className="w-full bg-transparent text-2xl font-bold text-gray-800 outline-none"
+                      />
+                      <div className="text-xs text-gray-400 mt-1">ETH/USDC</div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-pink-50 border-2 border-pink-200 rounded-2xl p-6 text-center">
+                    <div className="text-pink-800 font-bold text-lg mb-1">Full Range Position</div>
+                    <p className="text-pink-600 text-sm">
+                      Your liquidity will be active across all prices. You earn fees on all trades but may face impermanent loss.
+                    </p>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between text-xs text-gray-500 bg-gray-50 rounded-xl p-3">
+                  <span>Tick Range:</span>
+                  <span className="font-mono">{tickLower.toLocaleString()} ↔ {tickUpper.toLocaleString()}</span>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setStep('deposit')}
+                disabled={!fullRange && (!minPrice || !maxPrice)}
+                className="w-full py-4 bg-gradient-to-r from-pink-500 to-rose-500 text-white rounded-2xl font-bold text-lg shadow-lg shadow-pink-500/25 hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                Continue to Deposit
+                <ArrowRight className="w-5 h-5" />
+              </button>
+              
+              <button
+                onClick={() => setStep('select-fee')}
+                className="w-full py-3 text-gray-500 font-medium hover:text-gray-700 transition-colors"
+              >
+                ← Change Fee Tier
+              </button>
+            </div>
+          )}
+
+          {/* STEP 4: Deposit */}
+          {step === 'deposit' && (
+            <div className="space-y-4">
+              {/* ETH Input */}
+              <div className="bg-gray-50 rounded-2xl p-4">
+                <div className="flex justify-between mb-2">
+                  <span className="text-gray-500 text-sm font-medium">Deposit ETH</span>
+                  <button 
+                    onClick={() => setMaxBalance('ETH')}
+                    className="text-pink-500 text-sm font-semibold hover:text-pink-600"
+                  >
+                    Balance: {ethBalance ? parseFloat(formatUnits(ethBalance.value, 18)).toFixed(4) : '--'}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <input
+                    type="number"
+                    value={ethAmount}
+                    onChange={(e) => setEthAmount(e.target.value)}
+                    placeholder="0"
+                    step="0.001"
+                    className="flex-1 min-w-0 bg-transparent text-3xl text-gray-800 placeholder-gray-300 outline-none font-light"
+                  />
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-2xl font-semibold text-gray-700 bg-white border border-gray-200 shadow-sm">
+                    <img src={TOKEN_INFO.ETH.icon} alt="ETH" className="w-7 h-7 rounded-full" />
+                    <span className="text-lg">ETH</span>
+                  </div>
+                </div>
+                <div className="text-gray-400 text-sm mt-2 font-medium">
+                  ${ethAmount ? (parseFloat(ethAmount) * 2000).toFixed(2) : '0.00'}
+                </div>
+              </div>
+
+              {/* Plus Divider */}
+              <div className="flex justify-center -my-2 relative z-10">
+                <div className="p-2 bg-white border-2 border-gray-100 shadow-md rounded-xl">
+                  <Plus className="w-5 h-5 text-gray-600" />
+                </div>
+              </div>
+
+              {/* USDC Input */}
+              <div className="bg-gray-50 rounded-2xl p-4">
+                <div className="flex justify-between mb-2">
+                  <span className="text-gray-500 text-sm font-medium">Deposit USDC</span>
+                  <button 
+                    onClick={() => setMaxBalance('USDC')}
+                    className="text-pink-500 text-sm font-semibold hover:text-pink-600"
+                  >
+                    Balance: {usdcBalance ? parseFloat(formatUnits(usdcBalance.value, 6)).toFixed(2) : '--'}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <input
+                    type="number"
+                    value={usdcAmount}
+                    onChange={(e) => setUsdcAmount(e.target.value)}
+                    placeholder="0"
+                    className="flex-1 min-w-0 bg-transparent text-3xl text-gray-800 placeholder-gray-300 outline-none font-light"
+                  />
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-2xl font-semibold text-gray-700 bg-white border border-gray-200 shadow-sm">
+                    <img src={TOKEN_INFO.USDC.icon} alt="USDC" className="w-7 h-7 rounded-full" />
+                    <span className="text-lg">USDC</span>
+                  </div>
+                </div>
+                <div className="text-gray-400 text-sm mt-2 font-medium">
+                  ${usdcAmount || '0.00'}
+                </div>
+              </div>
+
+              {/* Pool Summary */}
+              <div className="bg-blue-50 rounded-xl p-4 space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Fee Tier</span>
+                  <span className="font-semibold">{selectedFee ? FEE_TIERS.find(f => f.fee === selectedFee)?.label : ''}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Price Range</span>
+                  <span className="font-semibold">
+                    {fullRange ? 'Full Range' : `${parseFloat(minPrice).toFixed(4)} - ${parseFloat(maxPrice).toFixed(4)}`}
+                  </span>
+                </div>
+              </div>
+
+              {error && (
+                <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-red-700 text-sm">{error}</p>
+                </div>
+              )}
+
+              <div className="flex gap-3">
                 <button
-                  onClick={copyCommands}
-                  className="text-xs text-gray-400 hover:text-white transition-colors"
+                  onClick={() => setStep('range')}
+                  className="flex-1 py-4 bg-gray-100 text-gray-700 rounded-2xl font-bold hover:bg-gray-200 transition-colors"
                 >
-                  Copy All
+                  Back
+                </button>
+                <button
+                  onClick={handleAddLiquidity}
+                  disabled={!isConnected || isPending || isConfirming}
+                  className={`flex-[2] py-4 rounded-2xl font-bold text-lg transition-all shadow-lg ${
+                    !isConnected
+                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                      : isPending || isConfirming
+                      ? 'bg-gradient-to-r from-pink-400 to-rose-400 text-white cursor-wait'
+                      : 'bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600 text-white shadow-pink-500/25 hover:shadow-xl'
+                  }`}
+                >
+                  <div className="flex items-center justify-center gap-2">
+                    {!isConnected ? (
+                      <><Wallet className="w-5 h-5" /> Connect</>
+                    ) : isPending || isConfirming ? (
+                      <><Loader2 className="w-5 h-5 animate-spin" /> Confirming...</>
+                    ) : (
+                      <><Droplets className="w-5 h-5" /> Add Liquidity</>
+                    )}
+                  </div>
                 </button>
               </div>
-              <div className="p-6">
-                <p className="text-gray-400 text-sm mb-4">
-                  Run these commands from the <code className="bg-gray-800 px-2 py-1 rounded text-gray-300">contracts/</code> folder:
-                </p>
-                <pre className="bg-gray-950 rounded-xl p-4 overflow-x-auto text-sm font-mono text-green-400 leading-relaxed">
-                  {CLI_COMMANDS}
-                </pre>
-              </div>
-            </div>
 
-            {/* Pool Info Card */}
-            <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-              <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                <Info className="w-5 h-5 text-blue-500" />
-                Pool Details
-              </h3>
-              <div className="space-y-3 text-sm">
-                <div className="flex justify-between py-2 border-b border-gray-100">
-                  <span className="text-gray-500">Network</span>
-                  <span className="font-medium text-gray-900">Sepolia Testnet</span>
-                </div>
-                <div className="flex justify-between py-2 border-b border-gray-100">
-                  <span className="text-gray-500">Fee Tier</span>
-                  <span className="font-medium text-gray-900">0.3% (3000)</span>
-                </div>
-                <div className="flex justify-between py-2 border-b border-gray-100">
-                  <span className="text-gray-500">Tick Spacing</span>
-                  <span className="font-medium text-gray-900">60</span>
-                </div>
-                <div className="flex justify-between py-2">
-                  <span className="text-gray-500">Pool Manager</span>
-                  <a
-                    href={`https://sepolia.etherscan.io/address/${POOL_MANAGER_ADDRESS}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="font-mono text-pink-600 hover:text-pink-700"
-                  >
-                    {POOL_MANAGER_ADDRESS.slice(0, 6)}...{POOL_MANAGER_ADDRESS.slice(-4)}
-                  </a>
-                </div>
-              </div>
-            </div>
-
-            {/* Alternative Options */}
-            <div className="bg-gradient-to-br from-pink-50 to-purple-50 rounded-2xl border border-pink-100 p-6">
-              <h3 className="font-semibold text-gray-900 mb-4">Alternative Options</h3>
-              <div className="space-y-3">
+              {txHash && (
                 <a
-                  href="https://app.uniswap.org/positions/"
+                  href={`https://sepolia.etherscan.io/tx/${txHash}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center gap-3 p-4 bg-white rounded-xl shadow-sm hover:shadow-md transition-all group"
+                  className="flex items-center justify-center gap-2 text-pink-500 hover:text-pink-600 text-sm font-medium"
                 >
-                  <div className="w-10 h-10 rounded-xl bg-pink-100 flex items-center justify-center group-hover:bg-pink-200 transition-colors">
-                    <ExternalLink className="w-5 h-5 text-pink-600" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="font-medium text-gray-900">Uniswap UI</p>
-                    <p className="text-sm text-gray-500">Use the official Uniswap interface</p>
-                  </div>
+                  View on Etherscan <ExternalLink className="w-4 h-4" />
                 </a>
-                <div className="flex items-center gap-3 p-4 bg-white rounded-xl shadow-sm">
-                  <div className="w-10 h-10 rounded-xl bg-purple-100 flex items-center justify-center">
-                    <Terminal className="w-5 h-5 text-purple-600" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="font-medium text-gray-900">Foundry Scripts</p>
-                    <p className="text-sm text-gray-500">Use the CLI commands above</p>
-                  </div>
-                </div>
-              </div>
+              )}
             </div>
-          </div>
+          )}
         </div>
 
-        {/* Transaction Status */}
-        {txHash && (
-          <div className="mt-6 bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-            <h3 className="font-bold text-gray-900 mb-4">Transaction Status</h3>
-            <div className="flex items-center gap-3">
-              {isConfirming ? (
-                <Loader2 className="w-5 h-5 text-yellow-500 animate-spin" />
-              ) : isSuccess ? (
-                <CheckCircle className="w-5 h-5 text-green-500" />
-              ) : (
-                <AlertCircle className="w-5 h-5 text-red-500" />
-              )}
-              <span className="text-gray-700">
-                {isConfirming ? 'Confirming transaction...' : 
-                 isSuccess ? 'Transaction confirmed!' : 
-                 'Transaction failed'}
-              </span>
-            </div>
-            <a
-              href={`https://sepolia.etherscan.io/tx/${txHash}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-3 inline-flex items-center gap-1 text-pink-600 hover:text-pink-700 text-sm font-medium"
-            >
-              View on Etherscan
-            </a>
-          </div>
-        )}
+        {/* Alternative */}
+        <div className="mt-6 text-center">
+          <p className="text-gray-500 text-sm mb-3">Prefer the official interface?</p>
+          <a
+            href="https://app.uniswap.org/positions"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-white border border-gray-200 rounded-2xl text-gray-700 font-medium hover:bg-gray-50 transition-colors shadow-sm"
+          >
+            Open Uniswap <ExternalLink className="w-4 h-4" />
+          </a>
+        </div>
       </div>
     </div>
   );
